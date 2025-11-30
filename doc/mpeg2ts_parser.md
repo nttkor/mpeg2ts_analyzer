@@ -1,81 +1,75 @@
 # MPEG2-TS Analyzer Project Documentation
 
 ## 1. 프로젝트 개요
-Harmonic CP9000 인코더로 생성된 HEVC 4K TS 스트림(`mama_uhd2.ts`)이 특정 디코더(NTT HC11000DS)에서 오디오 미출력 문제를 일으키는 원인을 분석하기 위한 프로젝트입니다.
-방송 계측 장비인 **Tektronix MTS430**의 분석 스타일을 벤치마킹하여, 직관적인 GUI 환경에서 TS 패킷 구조를 정밀 진단할 수 있도록 개발되었습니다.
+Harmonic CP9000 인코더로 생성된 HEVC 4K TS 스트림(`mama_uhd2.ts`)의 디코더 호환성 문제(NTT HC11000DS 오디오 미출력)를 분석하기 위한 프로젝트입니다.
+방송 계측 장비인 **Tektronix MTS430**의 분석 스타일을 벤치마킹하여, 직관적인 GUI 환경에서 TS 패킷 구조를 정밀 진단할 수 있습니다.
+
+- **GitHub Repository**: [https://github.com/nttkor/mpeg2ts_analyzer](https://github.com/nttkor/mpeg2ts_analyzer)
 
 ## 2. 시스템 구조 (Architecture)
-초기 단일 스크립트에서 유지보수성과 확장성을 위해 **4개의 모듈**로 기능을 분리하였습니다.
+유지보수성과 확장성을 위해 기능별로 **6개의 모듈**로 분리되었습니다.
 
 ### 📂 파일 구성
 ```text
 scripts/
-├── ts_analyzer_gui.py    # [Main] GUI 진입점 및 화면 출력 담당
-├── ts_parser_core.py     # [Core] TS 패킷 파싱 로직 및 데이터 모델
-├── ts_scanner.py         # [Worker] 백그라운드 전체 스캔 및 통계 수집
-└── play_ts_opencv.py     # [Player] OpenCV 비디오 재생 전용 모듈
+├── ts_analyzer_gui.py    # [Main Controller] GUI 진입점, 전체 조율
+├── ts_ui_manager.py      # [View/Input] 툴바, 메뉴, 마우스 이벤트 처리
+├── ts_parser_core.py     # [Core Engine] 파싱 로직 및 상태 관리
+├── ts_models.py          # [Data Model] Packet, PAT, PMT, PES 클래스 정의
+├── ts_scanner.py         # [Worker] 백그라운드 파일 스캔 및 리포트
+└── play_ts_opencv.py     # [Player] OpenCV 비디오 재생 모듈
 ```
 
 ## 3. 모듈별 상세 기능
 
-### ① `ts_analyzer_gui.py` (GUI Controller)
-- **역할**: 사용자 인터페이스 및 전체 프로그램 제어.
-- **라이브러리**: OpenCV (`cv2`).
-- **주요 기능**:
-    - **Tree View (좌측)**: PAT/PMT 구조를 계층적 트리로 시각화 (Program -> Video/Audio).
-    - **Detail View (우측 상단)**: 현재 패킷의 헤더 정보(PID, PUSI, CC) 및 PID 속성 표시.
-    - **Hex View (우측 하단)**: 188바이트 Raw Data를 16진수와 ASCII로 표시.
-    - **Controls (상단)**: Play(`>`), Pause(`||`), Stop(`STOP`), Frame Step 이동.
-    - **BScan 버튼**: 백그라운드 전수 검사 ON/OFF 토글.
+### ① `ts_analyzer_gui.py` (Controller)
+- **역할**: 애플리케이션 수명 주기 관리, 파일 로드, 메인 뷰 그리기(Tree, Hex, Detail, PES View).
+- **특징**: `UIManager`를 통해 사용자 입력을 받고, `TSParser` 데이터를 시각화합니다.
 
-### ② `ts_parser_core.py` (Parsing Engine)
-- **역할**: TS 데이터 처리의 핵심 로직.
-- **클래스**: `TSParser`
-- **주요 기능**:
-    - `read_packet_at(index)`: Random Access 지원 (Seek 기능).
-    - `parse_header()`: TS 헤더 비트 필드 파싱.
-    - `quick_scan()`: 파일 초기 로드 시 앞부분만 빠르게 읽어 구조 파악.
-    - `programs`, `pid_counts` 등 분석 데이터 저장소 역할.
+### ② `ts_ui_manager.py` (UI Manager)
+- **역할**: 복잡한 GUI 요소를 별도로 관리.
+- **기능**: Toolbar, Menu System(File/Recent), Mouse Interaction.
 
-### ③ `ts_scanner.py` (Background Worker)
-- **역할**: 파일 전체를 순회하며 통계를 내는 무거운 작업을 전담.
-- **클래스**: `TSScanner`
-- **주요 기능**:
-    - 별도 스레드(`threading`)에서 동작하여 GUI 멈춤 방지.
-    - 파일 끝까지 읽으며 전체 PID 개수 카운팅.
-    - 발견되지 않았던 후반부의 PSI/SI 테이블 업데이트.
+### ③ `ts_models.py` (Data Models) - **[New!]**
+- **역할**: TS 데이터 구조의 객체 지향적 정의.
+- **클래스**:
+    - `TSPacket`: 188바이트 패킷 헤더 파싱.
+    - `PSISection` (Base) -> `PATSection`, `PMTSection`.
+    - `PESHeader`: PES 구조(PTS/DTS, StreamID) 분석.
 
-### ④ `play_ts_opencv.py` (Video Player)
-- **역할**: 단순 비디오 재생 확인용.
-- **주요 기능**: `cv2.VideoCapture`를 이용해 HEVC 영상을 디코딩하고 화면에 출력.
+### ④ `ts_parser_core.py` (Parsing Engine)
+- **역할**: 파일을 읽고 `ts_models`를 활용하여 데이터를 추출.
+- **기능**: Random Access(`read_packet_at`), 퀵 스캔.
+
+### ⑤ `ts_scanner.py` (Background Scanner)
+- **역할**: 파일 전체 통계 수집.
+- **기능**: 백그라운드 스레드 동작, PID 점유율 분석, Markdown 리포트 생성.
 
 ---
 
-## 4. 사용 방법 (Usage)
+## 4. 주요 기능 (Key Features)
 
-### 실행
+1. **PES / Audio Deep Analysis**
+    - **Single/Multi Packet 구분**: PES 패킷이 단독인지 분할되었는지 판별.
+    - **Audio Sync Check**: 오디오 스트림 내의 Sync Word(`0xFFF`) 패턴 자동 검색.
+    - **PTS/DTS**: 타임스탬프 파싱 및 초(s) 단위 표시.
+
+2. **Smart Navigation**
+    - **PID Filtering**: 특정 PID를 선택하면 해당 패킷 단위로 건너뛰며 탐색 가능.
+    - **BScan**: 백그라운드에서 파일 전체를 스캔하여 놓친 PID나 프로그램 정보를 찾아냄.
+
+3. **User-Friendly GUI**
+    - **Menu System**: File Open, Recent Files, Exit 지원.
+    - **Hex View**: 실시간 바이너리 덤프.
+    - **Tree View**: 직관적인 프로그램/스트림 계층 구조 확인.
+
+---
+
+## 5. 사용 방법 (Usage)
 ```bash
 python scripts/ts_analyzer_gui.py
 ```
-
-### 조작법
-- **`>` / `||`**: 패킷 단위 자동 진행 (Play) / 일시정지 (Pause).
-- **`<<` / `>>`**: 고속 탐색 (되감기 / 빨리감기).
-- **`STOP`**: 처음 위치로 이동 및 정지.
-- **`BScan`**: 백그라운드 전체 스캔 시작/중지 (전체 통계 필요 시 사용).
-- **`Video Win`**: 별도의 비디오 재생 창 띄우기 (영상 확인용).
-- **키보드 단축키**:
-    - `Space`: 재생/일시정지 토글.
-    - `,` (콤마): 이전 패킷으로 1칸 이동.
-    - `.` (점): 다음 패킷으로 1칸 이동.
-    - `p`: 비디오 플레이어 실행.
-    - `q`: 프로그램 종료.
-
----
-
-## 5. 분석 진행 상황
-- **비디오**: HEVC 4K @ 59.94fps (PID 0x200) 정상 확인.
-- **오디오**: PID 0x102 ~ 0x109 (8채널).
-    - PES Header 파싱 결과: Start Code(`0x000001`) 정상.
-    - MP2 Sync Word: `FFF` 패턴 확인 필요.
-    - (현재 분석 중): 디코더 호환성 문제의 원인이 **PES 헤더 구조**인지 **스트림 설정(Descriptor)** 문제인지 확인 필요.
+- **File > Open**: 분석할 TS 파일 선택.
+- **BScan**: 전체 파일 구조 분석.
+- **Tree View**: 프로그램 및 PID 선택 (마우스 클릭).
+- **PES View**: 선택된 PID의 상세 헤더 및 오디오 정보 확인.
