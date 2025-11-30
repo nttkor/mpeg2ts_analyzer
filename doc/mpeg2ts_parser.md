@@ -18,10 +18,12 @@ mpeg2TS/
 │   ├── ts_scanner.py        # [Worker] 백그라운드 전체 스캔 및 통계
 │   ├── ts_ui_manager.py     # [UI] 버튼, 메뉴, 마우스 이벤트 관리
 │   ├── ts_models.py         # [Model] 데이터 구조체 정의 (참조용)
+│   ├── zitter_measurement.py # [New] PCR Jitter 분석 모듈 (Math & Graph)
 │   └── play_ts_opencv.py    # [Player] 단순 비디오 재생기 (Video Window)
 └── doc/
     ├── mpeg2ts_parser.md    # 프로젝트 문서 (Main)
-    └── pcr_info.md          # PCR 기술 문서
+    ├── pcr_info.md          # PCR 기술 문서
+    └── jitter_analysis.md   # Jitter 분석 상세 문서 (구 zitter_mesurment.md)
 ```
 
 ### 🧩 모듈별 상세 분석
@@ -32,6 +34,7 @@ mpeg2TS/
   - **화면 레이아웃**: 5분할 대시보드 (PAT, PMT, Detail, PES, Hex) 렌더링.
   - **이벤트 처리**: 키보드/마우스 이벤트 처리, 필터 토글, 네비게이션 제어.
   - **Smart Search Engine**: 단순 Seek가 아닌, 재생(Playback) 기반의 고속 필터링 검색 엔진 탑재.
+  - **File I/O**: Tkinter를 이용한 파일 열기 대화상자 지원 및 예외 처리 강화.
   - **연동**: `TSParser`, `TSScanner`, `UIManager` 인스턴스를 생성하고 조율.
 
 #### 2. `ts_parser_core.py` (Core Logic)
@@ -50,8 +53,9 @@ mpeg2TS/
 #### 4. `ts_ui_manager.py` (UI Component)
 - **역할**: OpenCV 화면 위에 그려지는 UI 요소(버튼, 메뉴, 툴바)를 관리합니다.
 - **주요 기능**:
-  - **Interactive Toolbar**: Play/Pause 상태 표시, 필터 버튼(Video/Audio/PCR 등) 상태 관리.
+  - **Interactive Toolbar**: Play/Pause 상태 표시, 필터 버튼(Video/Audio/PCR 등) 및 **Jitter** 버튼 관리.
   - **Interaction**: 마우스 오버/클릭 이벤트 처리 및 시각적 피드백 제공.
+  - **Menu Drawing**: OpenCV Canvas 위에 파일 메뉴 및 드롭다운 메뉴 렌더링.
 
 ---
 
@@ -105,7 +109,13 @@ OpenCV Canvas에 직접 드로잉하여 빠른 반응속도를 제공합니다.
 4. **심층 분석 (BScan)**:
    - **BScan Click**: `TSScanner` 스레드 시작 -> 전체 파일 순회 -> `pid_counts` 업데이트.
 
-## 5. 향후 계획 (To-Do)
+## 5. 최신 업데이트 (Updates)
+- **2025-11-30**:
+  - **File Menu Fix**: OpenCV와 Tkinter 연동 문제 해결 (`root.attributes('-topmost', True)` 적용).
+  - **Jitter Analysis**: `zitter_measurement.py` 모듈 추가 및 `jitter_analysis.md` 문서 정리. 메인 툴바에 **Jitter** 버튼 추가.
+  - **UI/UX**: PES 네비게이션 버튼 배치 최적화 및 Audio Sync 표시 위치 수정.
+
+## 6. 향후 계획 (To-Do)
+- [ ] **Jitter Integration**: `ts_analyzer_gui.py`와 Jitter 분석 모듈 연동 및 그래프 UI 구현 (현재 버튼만 추가됨).
 - [ ] **Section Parsing**: PAT/PMT 외에 SDT, EIT, NIT 등 추가 SI 테이블 파싱.
 - [ ] **Video Decode**: `play_ts_opencv.py`를 통합하여 I/P/B 프레임 타입 분석 및 썸네일 표시.
-- [ ] **Jitter Analysis**: PCR 간격 및 Jitter 분석 그래프 추가.

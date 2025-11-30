@@ -30,6 +30,7 @@ class UIManager:
         btn_defs = [
             ('file', 'File', 70),
             ('bscan', 'BScan', 80),
+            ('jitter', 'Jitter', 80), # Jitter 버튼 추가
             ('rev', '<<', 70),
             ('play', '>', 70),
             ('ff', '>>', 70),
@@ -93,6 +94,11 @@ class UIManager:
                 label = "<<" if self.gui.playing else "<-"
             elif btn['name'] == 'ff':
                 label = ">>" if self.gui.playing else "->"
+            elif btn['name'] == 'jitter':
+                label = "Jitter"
+                if self.gui.show_jitter: # GUI 상태에 따라 색상 변경 (토글됨)
+                    color = (0, 100, 100)
+                else: color = (50, 50, 50)
             elif btn['name'] == 'bscan':
                 label = "Stop" if self.gui.scanner.running else "BScan"
                 if self.gui.scanner.running: 
@@ -247,24 +253,13 @@ class UIManager:
         return False # UI 처리 안됨 (Main GUI에서 TreeView 등 처리)
 
     def _handle_menu_action(self, action):
-        if action == 'exit':
-            sys.exit(0)
-        elif action == 'open':
-            self._open_file_dialog()
-        elif action.startswith('recent_'):
-            idx = int(action.split('_')[1])
-            if idx < len(self.recent_files):
-                self._open_file_dialog(self.recent_files[idx])
+        # 로직 처리는 Main GUI에 위임
+        if hasattr(self.gui, '_handle_menu'):
+            self.gui._handle_menu(action)
 
     def _open_file_dialog(self, path=None):
-        if not path:
-            root = tk.Tk()
-            root.withdraw()
-            path = filedialog.askopenfilename(filetypes=[("MPEG2-TS Files", "*.ts;*.tp;*.m2ts"), ("All Files", "*.*")])
-            root.destroy()
-        
-        if path and os.path.exists(path):
-            self.gui.load_file(path) # Main GUI의 로드 메서드 호출
+        # 이제 사용하지 않음 (Main GUI의 _open_file 사용)
+        pass
 
     def _handle_btn_action(self, name):
         # Main GUI의 메서드 호출

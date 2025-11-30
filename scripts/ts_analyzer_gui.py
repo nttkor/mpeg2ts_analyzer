@@ -12,6 +12,8 @@ import os
 import sys
 import time
 import importlib.util
+import tkinter as tk
+from tkinter import filedialog
 
 # Core 및 Scanner 모듈 import
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -44,6 +46,9 @@ class AnalyzerGUI:
         self.current_hex_data = b''
         self.show_report = False
         self.bscan_running = False
+        
+        # Jitter Analysis State
+        self.show_jitter = False
         
         # Filter States (Video, Audio, PCR, PTS, DTS)
         self.active_filters = {
@@ -878,7 +883,7 @@ class AnalyzerGUI:
 
     def _handle_btn(self, name):
         if name == 'file':
-            self.menu_open = not self.menu_open
+            self.ui.menu_open = not self.ui.menu_open
         elif name == 'play': self._toggle_play()
         elif name == 'stop': 
             self.playing = False
@@ -899,6 +904,11 @@ class AnalyzerGUI:
                 self.bscan_running = True # 리포트 오버레이 트리거
             else: 
                 self.scanner.start()
+        elif name == 'jitter':
+            self.show_jitter = not self.show_jitter
+            print(f"[UI] Jitter Analysis Window: {self.show_jitter}")
+            # TODO: Open Jitter Window logic here
+            
         elif name == 'prev': self._step_packet(-1)
         elif name == 'next': self._step_packet(1)
         
@@ -921,10 +931,19 @@ class AnalyzerGUI:
 
     def _open_file(self, path=None):
         if not path:
-            root = tk.Tk()
-            root.withdraw()
-            path = filedialog.askopenfilename(filetypes=[("MPEG2-TS Files", "*.ts;*.tp;*.m2ts"), ("All Files", "*.*")])
-            root.destroy()
+            try:
+                root = tk.Tk()
+                root.withdraw() # 메인 윈도우 숨김
+                # 최상위로 띄우기 위한 트릭
+                root.attributes('-topmost', True)
+                path = filedialog.askopenfilename(
+                    title="Open MPEG2-TS File",
+                    filetypes=[("MPEG2-TS Files", "*.ts;*.tp;*.m2ts"), ("All Files", "*.*")]
+                )
+                root.destroy()
+            except Exception as e:
+                print(f"[Error] File Dialog failed: {e}")
+                return
         
         if not path or not os.path.exists(path): return
         
