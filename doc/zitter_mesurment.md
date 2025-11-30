@@ -72,13 +72,21 @@ OpenCV를 활용하여 MTS430 스타일의 전문 계측 UI를 구현합니다.
 
 ---
 
-## 6. 작업 목록 (Todo List)
+## 6. 구현 현황 (Implementation Status)
 
-- [ ] **Data Core**: PCR 샘플(`offset`, `pcr_value`) 수집 로직 구현.
-- [ ] **Math Engine**:
-  - Least Squares Method (최소자승법) 구현으로 Bitrate 및 $T_{start}$ 도출.
-  - 가상 도착 시간 및 Jitter($\Delta$) 계산 함수.
-- [ ] **UI (OpenCV)**:
-  - 그래프 렌더링 클래스 (`TSGraphRenderer`) 설계.
-  - 줌/팬/오토스케일 상태 관리 및 마우스 이벤트 처리.
-- [ ] **Integration**: 메인 툴바에 'Jitter' 버튼 추가 및 연동.
+2025-11-30 기준 `scripts/zitter_measurement.py` 클래스 초안 작성 완료.
+
+### Class: `TSJitterAnalyzer`
+*   **Data Structure**:
+    *   `raw_pcr_data`: `(offset, pcr_val)` 튜플 리스트 저장.
+    *   `timing_jitter`, `align_jitter`: 계산된 지터 결과 배열 (Numpy).
+*   **Core Methods**:
+    *   `analyze_full()`: `numpy.polyfit`을 이용한 1차 선형 회귀로 Bitrate 및 Jitter 계산.
+    *   `auto_scale()`: 데이터 범위에 맞춰 Viewport(`scale_x`, `scale_y`) 자동 조정.
+    *   `render_graph(width, height)`: MTS-430 스타일(Cyan/Yellow) 그래프 렌더링.
+    *   `zoom(fx, fy)`, `pan(dx, dy)`: 마우스 인터랙션 지원.
+
+## 7. 향후 작업 (Next Steps)
+- [ ] **Integration**: `ts_analyzer_gui.py`와 `TSJitterAnalyzer` 연동.
+- [ ] **Threading**: 대용량 파일 분석 시 UI 프리징 방지를 위한 스레드 처리.
+- [ ] **Real-time Logic**: 재생 중 실시간 업데이트 로직(`add_pcr_data` 호출 시 부분 갱신) 구현.
