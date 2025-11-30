@@ -114,14 +114,13 @@ class AnalyzerGUI:
             
             # BScan 상태 관리
             if self.scanner.running:
-                # 스캔 중일 때는 플래그 유지
+                # 스캔 중이면 아무것도 안 함 (백그라운드 동작)
                 pass
-            elif self.bscan_running:
-                # 스캔이 방금 끝났거나(scanner.completed=True), 완료된 상태에서 버튼을 누른 경우
-                self.bscan_running = False
+            elif self.scanner.completed and not self.show_report and self.bscan_running:
+                # 스캔 완료 후 아직 리포트를 안 봤거나, 버튼 눌러서 리포트 요청 시
+                self.bscan_running = False # 트리거 해제
                 self.show_report = True
-                if "Completed" in self.parser.last_log:
-                    self.parser.last_log = "Report Generated."
+                self.parser.last_log = "Report Generated."
 
             if self.show_report:
                 self._draw_report_overlay(img)
@@ -1101,8 +1100,10 @@ class AnalyzerGUI:
             if self.scanner.running: 
                 self.scanner.stop()
             elif self.scanner.completed:
-                self.bscan_running = True # 리포트 오버레이 트리거
+                # 이미 완료된 상태면 리포트 다시 보기 트리거
+                self.bscan_running = True 
             else: 
+                # 초기 상태면 스캔 시작
                 self.scanner.start()
         elif name == 'jitter':
             self.show_jitter = not self.show_jitter

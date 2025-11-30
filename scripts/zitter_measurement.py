@@ -25,6 +25,7 @@ class TSJitterAnalyzer:
         self.bitrate = 0.0
         self.max_jitter = 0.0
         self.min_jitter = 0.0
+        self.max_align_jitter = 0.0
         
         # Viewport Control (Zoom/Pan)
         self.offset_x = 0.0     # Time Start (seconds)
@@ -96,6 +97,7 @@ class TSJitterAnalyzer:
 
         self.max_jitter = np.max(jitter_ns)
         self.min_jitter = np.min(jitter_ns)
+        self.max_align_jitter = np.max(np.abs(self.align_jitter))
         self.is_analyzed = True
         
         # 초기 뷰 자동 설정
@@ -194,7 +196,7 @@ class TSJitterAnalyzer:
             cv2.polylines(img, [pts_align], False, COLOR_ALIGN, 1, cv2.LINE_AA)
 
         # --- Info Display ---
-        info_text = f"Bitrate: {self.bitrate/1_000_000:.2f} Mbps | Max: {self.max_jitter:.0f}ns | Min: {self.min_jitter:.0f}ns"
+        info_text = f"Bitrate: {self.bitrate/1_000_000:.2f} Mbps | Timing Max: {self.max_jitter:.0f}ns | Align Max: {self.max_align_jitter:.0f}ns"
         cv2.putText(img, info_text, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_TEXT, 1)
         
         # Zoom Level

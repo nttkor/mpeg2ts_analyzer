@@ -63,3 +63,8 @@ Jitter 분석을 담당하는 핵심 클래스입니다.
 ## 5. 참고 (Reference)
 *   **ISO/IEC 13818-1**: PCR 허용 오차는 **±500ns**입니다.
 *   그래프 상에 ±500ns 지점에 붉은 점선(Limit Line)을 표시하여 규격 준수 여부를 직관적으로 보여줍니다.
+
+## 6. 구현 현황 (Status) - 2025-12-01
+*   **Analysis Logic**: `TSJitterAnalyzer` 클래스에 Timing Jitter 및 Alignment Jitter 계산 로직 구현 완료.
+*   **Report Integration**: `BScan` 리포트에 PCR Accuracy (Timing Jitter) 및 Alignment Jitter 수치(Max/Min ns) 출력 기능 통합.
+*   **ETR-290 Integration**: Jitter 측정값을 `TSETR290Analyzer`로 전달하여 `PCR_accuracy_error` 판정에 활용.

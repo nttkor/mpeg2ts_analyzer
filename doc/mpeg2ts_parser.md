@@ -114,8 +114,12 @@ OpenCV Canvas에 직접 드로잉하여 빠른 반응속도를 제공합니다.
   - **File Menu Fix**: OpenCV와 Tkinter 연동 문제 해결 (`root.attributes('-topmost', True)` 적용).
   - **Jitter Analysis**: `zitter_measurement.py` 모듈 추가 및 `jitter_analysis.md` 문서 정리. 메인 툴바에 **Jitter** 버튼 추가.
   - **UI/UX**: PES 네비게이션 버튼 배치 최적화 및 Audio Sync 표시 위치 수정.
+- **2025-12-01**:
+  - **ETR-290 Analysis**: ETR-290 Priority 1, 2 항목(Sync, PAT, PMT, CC, PCR, PTS 등)에 대한 정밀 에러 체크 및 통계 모듈(`ts_etr290_analyzer.py`) 구현.
+  - **Report Enhancement**: BScan 리포트에 Video/Audio PPS(초당 패킷수), 패킷 도착 간격(Interval), PES 평균 길이 통계 추가. 상세 측정 통계 표(Min/Max/Avg) 신설.
+  - **Jitter Analysis Integration**: `TSJitterAnalyzer`에 **Alignment Jitter** 계산 로직 추가 및 리포트 연동 (Timing Jitter와 동시 표시).
 
 ## 6. 향후 계획 (To-Do)
-- [ ] **Jitter Integration**: `ts_analyzer_gui.py`와 Jitter 분석 모듈 연동 및 그래프 UI 구현 (현재 버튼만 추가됨).
+- [ ] **Jitter Graph GUI**: Jitter 분석 그래프를 OpenCV 윈도우 상에 팝업 또는 오버레이로 표시하는 기능 구현.
 - [ ] **Section Parsing**: PAT/PMT 외에 SDT, EIT, NIT 등 추가 SI 테이블 파싱.
 - [ ] **Video Decode**: `play_ts_opencv.py`를 통합하여 I/P/B 프레임 타입 분석 및 썸네일 표시.
