@@ -88,6 +88,75 @@ class TSParser:
         cnt = header & 0xF
         return pid, pusi, adapt, cnt
 
+    def parse_adapt_field(self, packet):
+        """
+        Adaptation Field 상세 파싱
+        :param packet: 188-byte TS packet
+        :return: dict with adapt field details
+        """
+        pid, pusi, adapt, cnt = self.parse_header(packet)
+        info = {
+            'exist': False,
+            'length': 0,
+            'discontinuity': 0,
+            'random_access': 0,
+            'es_priority': 0,
+            'pcr_flag': 0,
+            'opcr_flag': 0,
+            'splicing_point_flag': 0,
+            'transport_private_data_flag': 0,
+            'adapt_field_extension_flag': 0,
+            'pcr': None,
+            'opcr': None
+        }
+        
+        # Check Adaptation Field Control
+        # 00: Reserved, 01: Payload Only, 10: Adapt Only, 11: Adapt + Payload
+        if adapt == 0 or adapt == 1:
+            return info
+
+        if len(packet) < 5: return info
+
+        adapt_len = packet[4]
+        info['exist'] = True
+        info['length'] = adapt_len
+        
+        if adapt_len > 0:
+            if len(packet) < 6: return info
+            flags = packet[5]
+            info['discontinuity'] = (flags >> 7) & 0x1
+            info['random_access'] = (flags >> 6) & 0x1
+            info['es_priority'] = (flags >> 5) & 0x1
+            info['pcr_flag'] = (flags >> 4) & 0x1
+            info['opcr_flag'] = (flags >> 3) & 0x1
+            info['splicing_point_flag'] = (flags >> 2) & 0x1
+            info['transport_private_data_flag'] = (flags >> 1) & 0x1
+            info['adapt_field_extension_flag'] = flags & 0x1
+            
+            idx = 6
+            # PCR Parsing
+            if info['pcr_flag']:
+                if len(packet) >= idx + 6:
+                    pcr_bytes = packet[idx:idx+6]
+                    # PCR is 33 bits base + 6 bits reserved + 9 bits extension
+                    v = struct.unpack('>Q', b'\x00\x00' + pcr_bytes)[0]
+                    pcr_base = (v >> 15) & 0x1FFFFFFFF
+                    pcr_ext = v & 0x1FF
+                    info['pcr'] = pcr_base * 300 + pcr_ext
+                    idx += 6
+            
+            # OPCR Parsing
+            if info['opcr_flag']:
+                if len(packet) >= idx + 6:
+                    opcr_bytes = packet[idx:idx+6]
+                    v = struct.unpack('>Q', b'\x00\x00' + opcr_bytes)[0]
+                    opcr_base = (v >> 15) & 0x1FFFFFFFF
+                    opcr_ext = v & 0x1FF
+                    info['opcr'] = opcr_base * 300 + opcr_ext
+                    idx += 6
+                    
+        return info
+
     def _parsing_loop(self):
         """백그라운드 파싱 루프: 파일 전체를 스캔하며 구조 파악"""
         if not os.path.exists(self.file_path):

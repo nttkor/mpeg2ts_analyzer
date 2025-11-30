@@ -211,9 +211,106 @@ class AnalyzerGUI:
 
         # PID 및 기본 정보 표시
         info = self.parser.pid_map.get(self.selected_pid, {})
-        cv2.putText(img, f"Selected PID: 0x{self.selected_pid:X} ({info.get('desc', 'Unknown')})", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
-        cur_y += 30
+        pid_text = f"Selected PID: 0x{self.selected_pid:X} ({info.get('desc', 'Unknown')})"
+        cv2.putText(img, pid_text, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
+        
+        # PES Navigation Buttons (Selected PID 옆으로 이동)
+        # Layout: << (Prev Start)  < (Prev Pkt)  > (Next Pkt)  >> (Next Start)
+        (text_w, text_h), _ = cv2.getTextSize(pid_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+        btn_start_x = x + 20 + text_w + 30 
+        
+        gap = 10
+        btn_w = 30
+        
+        # 1. Prev PES Start (<<)
+        btn_pes_prev_rect = (btn_start_x, cur_y - 15, btn_start_x + btn_w, cur_y + 10)
+        
+        # 2. Prev Packet (<)
+        bx = btn_start_x + btn_w + gap
+        btn_pkt_prev_rect = (bx, cur_y - 15, bx + btn_w, cur_y + 10)
+        
+        # 3. Next Packet (>)
+        bx += btn_w + gap
+        btn_pkt_next_rect = (bx, cur_y - 15, bx + btn_w, cur_y + 10)
 
+        # 4. Next PES Start (>>)
+        bx += btn_w + gap
+        btn_pes_next_rect = (bx, cur_y - 15, bx + btn_w, cur_y + 10)
+        
+        # --- Draw Buttons ---
+        
+        # 1. <<
+        color = (255, 200, 0)
+        r = btn_pes_prev_rect
+        if r[0] <= self.mouse_x <= r[2] and r[1] <= self.mouse_y <= r[3]:
+            color = (0, 255, 255)
+            cv2.rectangle(img, (r[0]-3, r[1]-3), (r[2]+3, r[3]+3), (60, 60, 80), -1)
+        
+        # Draw two triangles for <<
+        mid_y = (r[1] + r[3]) // 2
+        # Left triangle
+        pt1 = (r[0] + 15, r[1] + 5)
+        pt2 = (r[0] + 15, r[3] - 5)
+        pt3 = (r[0] + 2, mid_y)
+        cv2.drawContours(img, [np.array([pt1, pt2, pt3])], 0, color, -1)
+        # Right triangle (offset)
+        pt1_b = (r[0] + 25, r[1] + 5)
+        pt2_b = (r[0] + 25, r[3] - 5)
+        pt3_b = (r[0] + 12, mid_y)
+        cv2.drawContours(img, [np.array([pt1_b, pt2_b, pt3_b])], 0, color, -1)
+
+        # 2. <
+        color = (255, 200, 0)
+        r = btn_pkt_prev_rect
+        if r[0] <= self.mouse_x <= r[2] and r[1] <= self.mouse_y <= r[3]:
+            color = (0, 255, 255)
+            cv2.rectangle(img, (r[0]-3, r[1]-3), (r[2]+3, r[3]+3), (60, 60, 80), -1)
+        
+        pt1 = (r[2] - 5, r[1] + 5)
+        pt2 = (r[2] - 5, r[3] - 5)
+        pt3 = (r[0] + 5, mid_y)
+        cv2.drawContours(img, [np.array([pt1, pt2, pt3])], 0, color, -1)
+
+        # 3. >
+        color = (255, 200, 0)
+        r = btn_pkt_next_rect
+        if r[0] <= self.mouse_x <= r[2] and r[1] <= self.mouse_y <= r[3]:
+            color = (0, 255, 255)
+            cv2.rectangle(img, (r[0]-3, r[1]-3), (r[2]+3, r[3]+3), (60, 60, 80), -1)
+        
+        pt1 = (r[0] + 5, r[1] + 5)
+        pt2 = (r[0] + 5, r[3] - 5)
+        pt3 = (r[2] - 5, mid_y)
+        cv2.drawContours(img, [np.array([pt1, pt2, pt3])], 0, color, -1)
+
+        # 4. >>
+        color = (255, 200, 0)
+        r = btn_pes_next_rect
+        if r[0] <= self.mouse_x <= r[2] and r[1] <= self.mouse_y <= r[3]:
+            color = (0, 255, 255)
+            cv2.rectangle(img, (r[0]-3, r[1]-3), (r[2]+3, r[3]+3), (60, 60, 80), -1)
+            
+        # Left triangle
+        pt1 = (r[0] + 5, r[1] + 5)
+        pt2 = (r[0] + 5, r[3] - 5)
+        pt3 = (r[0] + 18, mid_y)
+        cv2.drawContours(img, [np.array([pt1, pt2, pt3])], 0, color, -1)
+        # Right triangle
+        pt1_b = (r[0] + 15, r[1] + 5)
+        pt2_b = (r[0] + 15, r[3] - 5)
+        pt3_b = (r[0] + 28, mid_y)
+        cv2.drawContours(img, [np.array([pt1_b, pt2_b, pt3_b])], 0, color, -1)
+
+        cur_y += 30
+        
+        # PES Navigation Target 초기 등록 (기본값)
+        self.pes_nav_targets = {
+            'pes_prev': {'rect': btn_pes_prev_rect, 'idx': -2},
+            'pkt_prev': {'rect': btn_pkt_prev_rect},
+            'pkt_next': {'rect': btn_pkt_next_rect},
+            'pes_next': {'rect': btn_pes_next_rect}
+        }
+        
         # 현재 패킷 데이터 확인
         if not self.current_hex_data: return
         
@@ -296,178 +393,207 @@ class AnalyzerGUI:
             acc_payload = 0 
             
             curr_p_len = len(payload)
-            search_limit = 5000 # 검색 범위 확대 (Video는 큼)
+            
+            # Video 스트림이면 탐색 범위를 크게 잡음 (50,000 패킷 = 약 9.4MB)
+            # 일반 Audio/Data는 5,000 패킷이면 충분
+            is_video = False
+            pid_info = self.parser.pid_map.get(self.selected_pid, {})
+            if "Video" in pid_info.get('desc', ''): is_video = True
+            
+            search_limit = 50000 if is_video else 5000 
             dist = 0
             
-            # 현재 패킷(k=0)부터 검색하도록 수정
-            for k in range(0, search_limit):
-                t_idx = self.current_pkt_idx - k
-                if t_idx < 0: break
+            # 최적화: 파일을 한 번에 읽어서 메모리 탐색 (Batch Read)
+            try:
+                start_search_idx = max(0, self.current_pkt_idx - search_limit)
+                read_count = self.current_pkt_idx - start_search_idx
                 
-                t_data = self.parser.read_packet_at(t_idx)
-                if not t_data: break
-                
-                t_pid, t_pusi, t_adapt, _ = self.parser.parse_header(t_data)
-                
-                if t_pid == self.selected_pid:
-                    # 현재 패킷(k=0)이 아니고 이전 패킷들이라면 count 증가
-                    if k > 0: dist += 1
+                if read_count > 0:
+                    with open(self.parser.file_path, "rb") as f:
+                        f.seek(start_search_idx * 188)
+                        chunk_data = f.read(read_count * 188)
                     
-                    t_off = 4
-                    if t_adapt & 0x2: t_off = 5 + t_data[4]
-                    
-                    # Payload 길이 계산
-                    if t_off < 188:
-                        if k > 0: acc_payload += (188 - t_off)
-                    
-                    if t_pusi:
-                        found_start = True
-                        start_idx = t_idx
+                    # 역방향 탐색 (메모리)
+                    # chunk_data의 끝에서부터 앞으로 이동
+                    for k in range(read_count):
+                        # k=0 -> 바로 전 패킷 (idx - 1)
+                        # offset calculation
+                        # chunk size = read_count * 188
+                        # target packet start = (read_count - 1 - k) * 188
                         
-                        # PES Header Parsing
-                        t_payload = t_data[t_off:]
-                        pes_info = self.parser.parse_pes_header(t_payload)
+                        pkt_offset = (read_count - 1 - k) * 188
+                        t_data = chunk_data[pkt_offset : pkt_offset + 188]
                         
-                        if pes_info:
-                            total_len = pes_info['pes_length']
+                        # PID/PUSI Parsing
+                        import struct
+                        h = struct.unpack('>I', t_data[:4])[0]
+                        t_pid = (h >> 8) & 0x1FFF
+                        
+                        if t_pid == self.selected_pid:
+                            dist += 1
                             
-                            current_seq = dist + 1
-                            processed_bytes = acc_payload + curr_p_len
+                            t_pusi = (h >> 22) & 0x1
+                            t_adapt = (h >> 4) & 0x3
                             
-                            prog_info = ""
-                            if total_len > 0:
-                                pct = (processed_bytes / total_len) * 100
-                                est_total_pkts = int((total_len + 6) / 184.0) + 1
-                                prog_info = f" | {pct:.1f}% ({processed_bytes}/{total_len})"
-                                seq_str = f"Seq: {current_seq} / ~{est_total_pkts}"
-                            else:
-                                seq_str = f"Seq: {current_seq} (Total Len Unknown)"
-                                prog_info = f" | Acc: {processed_bytes} bytes"
+                            t_off = 4
+                            if t_adapt & 0x2: 
+                                t_off = 5 + t_data[4]
+                            
+                            if t_off < 188:
+                                acc_payload += (188 - t_off)
+                            
+                            if t_pusi:
+                                found_start = True
+                                start_idx = self.current_pkt_idx - 1 - k
                                 
-                            cv2.putText(img, seq_str + prog_info, (x+20, cur_y+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 100), 1)
-                        else:
-                            # PES Parse Error Debugging
-                            cv2.putText(img, "[Error] Invalid PES Header (Start Code != 0x000001)", (x+20, cur_y+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-                            if len(t_payload) >= 8:
-                                dump = " ".join(f"{b:02X}" for b in t_payload[:8])
-                                cv2.putText(img, f"Raw: {dump}...", (x+20, cur_y+45), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
-                                cur_y += 20
-                        break
+                                # PES Header Parsing for Start Packet
+                                t_payload = t_data[t_off:]
+                                pes_info = self.parser.parse_pes_header(t_payload)
+                                
+                                if pes_info:
+                                    total_len = pes_info['pes_length']
+                                    current_seq = dist
+                                    processed_bytes = acc_payload + curr_p_len
+                                    
+                                    prog_info = ""
+                                    # Video (0) Handling
+                                    if total_len == 0:
+                                        seq_str = f"Seq: {current_seq} (Unbounded)"
+                                        prog_info = f" | Acc: {processed_bytes:,} bytes"
+                                    else:
+                                        pct = (processed_bytes / total_len) * 100
+                                        est_total_pkts = int((total_len + 6) / 184.0) + 1
+                                        prog_info = f" | {pct:.1f}% ({processed_bytes:,}/{total_len:,})"
+                                        seq_str = f"Seq: {current_seq} / ~{est_total_pkts}"
+                                        
+                                    cv2.putText(img, seq_str + prog_info, (x+20, cur_y+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 100), 1)
+                                break
+            except Exception as e:
+                 print(f"[Error] Back-tracking failed: {e}")
             
-            # 점프 링크 (삼각형 버튼 아이콘)
-            target_idx = start_idx if found_start else -2
-            
-            # 버튼 위치
-            btn_x = x + 20
-            btn_y = cur_y - 15
-            btn_w, btn_h = 30, 25
-            
-            # 클릭 영역 저장
-            rect = (btn_x, btn_y, btn_x + btn_w + 300, btn_y + btn_h) # 텍스트까지 포함해서 넓게
-            self.pes_jump_target = {'rect': rect, 'idx': target_idx}
-            
-            # Hover Check
-            color = (255, 200, 0) # Yellow
-            if rect[0] <= self.mouse_x <= rect[2] and rect[1] <= self.mouse_y <= rect[3]:
-                color = (0, 255, 255) # Cyan
-                # 버튼 배경 박스
-                cv2.rectangle(img, (rect[0]-5, rect[1]-5), (rect[2], rect[3]+5), (60, 60, 80), -1)
-                cv2.rectangle(img, (rect[0]-5, rect[1]-5), (rect[2], rect[3]+5), (200, 200, 0), 1)
+            # PES Navigation Target 업데이트 (좌표는 위에서 계산됨)
+        # 버튼이 눌렸을 때 동작하도록 targets 딕셔너리를 갱신해야 함
+        if found_start:
+            self.pes_nav_targets['pes_prev']['idx'] = start_idx
+        
+        # 점프 링크 (삼각형 버튼 아이콘) - 이제 필요없으므로 좌표만 유지하거나 삭제
+        # target_idx = start_idx if found_start else -2
+        
+        # 클릭 영역 저장 (이전 텍스트 링크 영역 삭제)
+        # self.pes_jump_target = ... (삭제)
+        
+        # 클릭 피드백 (버튼 위치에 사각형 그리기)
+        if hasattr(self, 'last_click_time') and hasattr(self, 'last_click_target'):
+            if time.time() - self.last_click_time < 0.2:
+                if self.last_click_target == 'pes_prev':
+                     cv2.rectangle(img, btn_pes_prev_rect[:2], btn_pes_prev_rect[2:], (0, 0, 255), 2)
+                elif self.last_click_target == 'pes_next':
+                     cv2.rectangle(img, btn_pes_next_rect[:2], btn_pes_next_rect[2:], (0, 0, 255), 2)
 
-            # PES Navigation UI
-            # Prev Button (Left Triangle)
-            btn_prev_rect = (x+20, cur_y-15, x+50, cur_y+10)
-            # Next Button (Right Triangle)
-            btn_next_rect = (x+350, cur_y-15, x+380, cur_y+10)
-            
-            self.pes_nav_targets = {
-                'prev': {'rect': btn_prev_rect, 'idx': start_idx if found_start else -2},
-                'next': {'rect': btn_next_rect}
-            }
-            
-            # 1. Draw Prev Button (<)
-            color = (255, 200, 0)
-            if btn_prev_rect[0] <= self.mouse_x <= btn_prev_rect[2] and btn_prev_rect[1] <= self.mouse_y <= btn_prev_rect[3]:
-                color = (0, 255, 255)
-                cv2.rectangle(img, (btn_prev_rect[0]-5, btn_prev_rect[1]-5), (btn_prev_rect[2]+5, btn_prev_rect[3]+5), (60, 60, 80), -1)
-                
-            pt1 = (btn_prev_rect[2], btn_prev_rect[1] + 5)
-            pt2 = (btn_prev_rect[2], btn_prev_rect[3] - 5)
-            pt3 = (btn_prev_rect[0] + 5, (btn_prev_rect[1] + btn_prev_rect[3]) // 2)
-            cv2.drawContours(img, [np.array([pt1, pt2, pt3])], 0, color, -1)
-            
-            prev_txt = f"Parent Start #{start_idx}" if found_start else "Find Prev Start"
-            cv2.putText(img, prev_txt, (x+60, cur_y+5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-            
-            # 2. Draw Next Button (>)
-            color_next = (255, 200, 0)
-            if btn_next_rect[0] <= self.mouse_x <= btn_next_rect[2] and btn_next_rect[1] <= self.mouse_y <= btn_next_rect[3]:
-                color_next = (0, 255, 255)
-                cv2.rectangle(img, (btn_next_rect[0]-5, btn_next_rect[1]-5), (btn_next_rect[2]+5, btn_next_rect[3]+5), (60, 60, 80), -1)
-            
-            pt1 = (btn_next_rect[0], btn_next_rect[1] + 5)
-            pt2 = (btn_next_rect[0], btn_next_rect[3] - 5)
-            pt3 = (btn_next_rect[2] - 5, (btn_next_rect[1] + btn_next_rect[3]) // 2)
-            cv2.drawContours(img, [np.array([pt1, pt2, pt3])], 0, color_next, -1)
-            
-            cv2.putText(img, "Find Next Start", (x+390, cur_y+5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_next, 1)
+        cur_y += 35
+        if found_start: cur_y += 10
 
-            # 클릭 피드백
-            if hasattr(self, 'last_click_time') and hasattr(self, 'last_click_target'):
-                if time.time() - self.last_click_time < 0.2:
-                    if self.last_click_target == 'pes_prev':
-                         cv2.rectangle(img, btn_prev_rect[:2], btn_prev_rect[2:], (0, 0, 255), 2)
-                    elif self.last_click_target == 'pes_next':
-                         cv2.rectangle(img, btn_next_rect[:2], btn_next_rect[2:], (0, 0, 255), 2)
-
-            cur_y += 35
-            if found_start: cur_y += 10
-
-            # Part of Multi-Packet PES 문구는 이제 위 링크로 대체되거나 아래에 보조로 표시
-            # cv2.putText(img, "Part of Multi-Packet PES", ... ) # 생략 또는 유지
-            
-            # Simple Audio Sync Check
-            if len(payload) > 2:
-                for i in range(len(payload)-1):
-                    # MP2/ADTS (FFF) Check
-                    if payload[i] == 0xFF and (payload[i+1] & 0xF0) == 0xF0:
-                        cv2.putText(img, f"[Audio Sync] Found at offset {i} (0xFFF...)", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                        break
+        # Part of Multi-Packet PES 문구는 이제 위 링크로 대체되거나 아래에 보조로 표시
+        # cv2.putText(img, "Part of Multi-Packet PES", ... ) # 생략 또는 유지
+        
+        # Simple Audio Sync Check
+        if len(payload) > 2:
+            for i in range(len(payload)-1):
+                # MP2/ADTS (FFF) Check
+                if payload[i] == 0xFF and (payload[i+1] & 0xF0) == 0xF0:
+                    cv2.putText(img, f"[Audio Sync] Found at offset {i} (0xFFF...)", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                    break
 
     def _draw_detail(self, img, x, y, w, h):
         cv2.rectangle(img, (x, y), (x+w, y+h), (35, 35, 45), -1)
-        cv2.putText(img, "Packet / PID Detail", (x+10, y+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+        # Title
+        cv2.putText(img, "ISO 13818-1 Packet Header Analysis", (x+10, y+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
         
+        if not self.current_hex_data: return
+        
+        # 1. Parse Header & Adaptation Field
+        adapt_info = self.parser.parse_adapt_field(self.current_hex_data)
+        pid, pusi, adapt, cnt = self.parser.parse_header(self.current_hex_data)
+        
+        import struct
+        hdr_val = struct.unpack('>I', self.current_hex_data[:4])[0]
+        tei = (hdr_val >> 23) & 0x1
+        prio = (hdr_val >> 21) & 0x1
+        scram = (hdr_val >> 6) & 0x3
+        
+        # 2. Layout Config
+        col1_x = x + 20
+        col2_x = x + 500
         cur_y = y + 50
-        if self.current_hex_data:
-            import struct
-            header_bytes = struct.unpack('>I', self.current_hex_data[:4])[0]
-            tei = (header_bytes >> 23) & 0x1
-            pusi = (header_bytes >> 22) & 0x1
-            prio = (header_bytes >> 21) & 0x1
-            pid = (header_bytes >> 8) & 0x1FFF
-            scram = (header_bytes >> 6) & 0x3
-            adapt = (header_bytes >> 4) & 0x3
-            cnt = header_bytes & 0xF
+        line_h = 25
+        
+        # --- Column 1: TS Header Fixed Part ---
+        cv2.putText(img, f"[TS Header] Packet Index: {self.current_pkt_idx}", (col1_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 255, 255), 1)
+        cur_y += line_h
+        
+        # Fixed Header Fields
+        fields = [
+            f"Sync Byte: 0x47",
+            f"Transport Error Indicator (TEI): {tei}",
+            f"Payload Unit Start Indicator (PUSI): {pusi}",
+            f"Transport Priority: {prio}"
+        ]
+        for f in fields:
+            cv2.putText(img, f, (col1_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+            cur_y += line_h
             
-            cv2.putText(img, f"[Packet Info] Index: {self.current_pkt_idx}", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
-            cur_y += 25
-            cv2.putText(img, f"PID: 0x{pid:04X} ({pid})   CC: {cnt}", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1)
-            cur_y += 25
+        # PID (Highlight if matches selected)
+        pid_color = (0, 255, 0) if pid == self.selected_pid else (200, 200, 200)
+        pid_desc = self.parser.pid_map.get(pid, {}).get('desc', 'Unknown')
+        cv2.putText(img, f"PID: 0x{pid:04X} ({pid}) - {pid_desc}", (col1_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, pid_color, 1)
+        cur_y += line_h
+        
+        fields2 = [
+            f"Transport Scrambling Control: {scram}",
+            f"Adaptation Field Control: {adapt} ({['Reserved', 'Payload Only', 'Adapt Only', 'Adapt + Payload'][adapt]})",
+            f"Continuity Counter: {cnt}"
+        ]
+        for f in fields2:
+            cv2.putText(img, f, (col1_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+            cur_y += line_h
+
+        # --- Column 2: Adaptation Field Detail ---
+        cur_y = y + 50
+        if adapt_info['exist']:
+            cv2.putText(img, "[Adaptation Field]", (col2_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 255, 150), 1)
+            cur_y += line_h
             
-            # Flags
-            flags_str = f"TEI: {tei}  PUSI: {pusi}  Prio: {prio}  Scram: {scram}"
-            cv2.putText(img, flags_str, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200,200,200), 1)
-            cur_y += 25
+            cv2.putText(img, f"Adaptation Field Length: {adapt_info['length']}", (col2_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+            cur_y += line_h
             
-            # Adaptation
-            adapt_desc = ["Rsrv", "Payload Only", "Adapt Only", "Adapt + Payload"][adapt]
-            cv2.putText(img, f"Adaptation: {adapt} ({adapt_desc})", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200,200,200), 1)
-            cur_y += 30
-            
-            if pid in self.parser.pid_map:
-                info = self.parser.pid_map[pid]
-                cv2.putText(img, f"[Type] {info['desc']}", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100,255,100), 1)
+            if adapt_info['length'] > 0:
+                flags_list = [
+                    f"Discontinuity Indicator: {adapt_info['discontinuity']}",
+                    f"Random Access Indicator: {adapt_info['random_access']}",
+                    f"ES Priority Indicator: {adapt_info['es_priority']}",
+                    f"PCR Flag: {adapt_info['pcr_flag']}",
+                    f"OPCR Flag: {adapt_info['opcr_flag']}",
+                    f"Splicing Point Flag: {adapt_info['splicing_point_flag']}"
+                ]
+                for f in flags_list:
+                    cv2.putText(img, f, (col2_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+                    cur_y += line_h
+                
+                # PCR Value Display
+                if adapt_info['pcr'] is not None:
+                    cur_y += 5
+                    pcr_val = adapt_info['pcr']
+                    pcr_sec = pcr_val / 27_000_000.0
+                    cv2.putText(img, f">> PCR Value: {pcr_val}", (col2_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                    cur_y += line_h
+                    cv2.putText(img, f"   ({pcr_sec:.6f} sec)", (col2_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                    cur_y += line_h
+                    
+                if adapt_info['opcr'] is not None:
+                    cv2.putText(img, f"OPCR Value: {adapt_info['opcr']}", (col2_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+                    cur_y += line_h
+        else:
+            cv2.putText(img, "[No Adaptation Field]", (col2_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
 
     def _draw_hex(self, img, x, y, w, h):
         cv2.rectangle(img, (x, y), (x+w, y+h), (20, 20, 20), -1)
@@ -601,11 +727,25 @@ class AnalyzerGUI:
 
             # 2. PES Navigation Click
             if hasattr(self, 'pes_nav_targets') and self.pes_nav_targets:
-                # Check Prev
-                if 'prev' in self.pes_nav_targets:
-                    r = self.pes_nav_targets['prev']['rect']
+                # 2-1. Prev Packet (<)
+                if 'pkt_prev' in self.pes_nav_targets:
+                    r = self.pes_nav_targets['pkt_prev']['rect']
                     if r[0]<=x<=r[2] and r[1]<=y<=r[3]:
-                        print("[DEBUG] Prev Clicked")
+                        self._step_packet(-1)
+                        return
+
+                # 2-2. Next Packet (>)
+                if 'pkt_next' in self.pes_nav_targets:
+                    r = self.pes_nav_targets['pkt_next']['rect']
+                    if r[0]<=x<=r[2] and r[1]<=y<=r[3]:
+                        self._step_packet(1)
+                        return
+
+                # 2-3. PES Start Prev (<<)
+                if 'pes_prev' in self.pes_nav_targets:
+                    r = self.pes_nav_targets['pes_prev']['rect']
+                    if r[0]<=x<=r[2] and r[1]<=y<=r[3]:
+                        print("[DEBUG] Prev PES Start Clicked")
                         self.last_click_time = time.time()
                         self.last_click_target = 'pes_prev'
                         
@@ -635,11 +775,11 @@ class AnalyzerGUI:
                         
                         return # Playback 루프에서 처리됨
 
-                # Check Next
-                if 'next' in self.pes_nav_targets:
-                    r = self.pes_nav_targets['next']['rect']
+                # 2-4. PES Start Next (>>)
+                if 'pes_next' in self.pes_nav_targets:
+                    r = self.pes_nav_targets['pes_next']['rect']
                     if r[0]<=x<=r[2] and r[1]<=y<=r[3]:
-                        print("[DEBUG] Next Clicked")
+                        print("[DEBUG] Next PES Start Clicked")
                         self.last_click_time = time.time()
                         self.last_click_target = 'pes_next'
                         
