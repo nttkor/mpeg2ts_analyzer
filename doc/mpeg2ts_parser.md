@@ -1,85 +1,68 @@
-# MPEG2-TS Analyzer Project Documentation
+# MPEG2-TS Parser Project
 
-## 1. 프로젝트 개요
-Harmonic CP9000 인코더로 생성된 HEVC 4K TS 스트림(`mama_uhd2.ts`)의 디코더 호환성 문제(NTT HC11000DS 오디오 미출력)를 분석하기 위한 프로젝트입니다.
-방송 계측 장비인 **Tektronix MTS430**의 분석 스타일을 벤치마킹하여, 직관적인 GUI 환경에서 TS 패킷 구조를 정밀 진단할 수 있습니다.
+## 개요
+Python과 OpenCV를 활용한 MPEG2-TS 스트림 분석기입니다.
+Tektronix MTS430과 유사한 직관적인 GUI를 제공하며, 실시간 패킷 분석 및 탐색이 가능합니다.
 
-- **GitHub Repository**: [https://github.com/nttkor/mpeg2ts_analyzer](https://github.com/nttkor/mpeg2ts_analyzer)
+## Architecture
+본 프로젝트는 5개의 모듈로 구성되어 있습니다:
+1. `ts_analyzer_gui.py`: 메인 GUI 컨트롤러 (OpenCV 기반)
+2. `ts_parser_core.py`: TS 패킷 파싱 핵심 로직
+3. `ts_scanner.py`: 백그라운드 전체 파일 스캔 및 리포트 생성
+4. `ts_ui_manager.py`: UI 드로잉 및 입력 이벤트 관리
+5. `ts_models.py`: TS 데이터 구조체 (Packet, Header, Section 등)
 
-## 2. 시스템 구조 (Architecture)
-유지보수성과 확장성을 위해 기능별로 **6개의 모듈**로 분리되었습니다.
+## 주요 기능 (Features)
 
-### 📂 파일 구성
-```text
-scripts/
-├── ts_analyzer_gui.py    # [Main Controller] GUI 진입점, 전체 조율
-├── ts_ui_manager.py      # [View/Input] 툴바, 메뉴, 마우스 이벤트 처리
-├── ts_parser_core.py     # [Core Engine] 파싱 로직 및 상태 관리
-├── ts_models.py          # [Data Model] Packet, PAT, PMT, PES 클래스 정의
-├── ts_scanner.py         # [Worker] 백그라운드 파일 스캔 및 리포트
-└── play_ts_opencv.py     # [Player] OpenCV 비디오 재생 모듈
-```
+### 1. Multi-View Dashboard
+- **PAT / PMT View**: 트리 구조로 프로그램 및 스트림 구성을 시각화. 클릭하여 필터링 가능.
+- **Detail View**: 선택된 패킷의 헤더 정보(PID, PUSI, CC, Scrambling 등) 상세 표시.
+- **PES View**: PES 헤더 파싱, PTS/DTS 타임스탬프, 오디오/비디오 스트림 정보 표시.
+- **Hex View**: 패킷 데이터의 16진수 및 ASCII 덤프 (재생 중 최적화).
 
-## 3. 모듈별 상세 기능
+### 2. Smart Navigation
+- **Timeline Control**: Play, Pause, FF(x2, x50), Rewind 기능.
+- **PES Jump**: 이전/다음 PES Start 패킷으로 자동 탐색 및 이동.
+  - 고속 탐색 모드 지원 (모든 패킷 정밀 검사).
+  - PMT 선택 PID 우선 추적.
+- **PID Filtering**: 특정 PID만 필터링하여 탐색 가능.
 
-### ① `ts_analyzer_gui.py` (Controller)
-- **역할**: 애플리케이션 수명 주기 관리, 파일 로드, 메인 뷰 그리기(Tree, Hex, Detail, PES View).
-- **특징**: `UIManager`를 통해 사용자 입력을 받고, `TSParser` 데이터를 시각화합니다.
+### 3. Background Analysis (BScan)
+- 별도 스레드에서 전체 파일을 스캔하여 PID별 사용량, 점유율, 연속성 오류 등을 분석.
+- 분석 완료 후 Markdown 형식의 리포트 자동 생성 (`output/` 폴더).
 
-### ② `ts_ui_manager.py` (UI Manager)
-- **역할**: 복잡한 GUI 요소를 별도로 관리.
-- **기능**: Toolbar, Menu System(File/Recent), Mouse Interaction.
+## 2025-11-30 Update: Advanced PES Navigation & Optimization
 
-### ③ `ts_models.py` (Data Models) - **[New!]**
-- **역할**: TS 데이터 구조의 객체 지향적 정의.
-- **클래스**:
-    - `TSPacket`: 188바이트 패킷 헤더 파싱.
-    - `PSISection` (Base) -> `PATSection`, `PMTSection`.
-    - `PESHeader`: PES 구조(PTS/DTS, StreamID) 분석.
+### 주요 변경 사항
+1. **PES Navigation (Jump) 기능 강화**
+   - **양방향 탐색**: `Prev(◀)` / `Next(▶)` 버튼을 통해 이전/다음 PES Start 패킷으로 이동 가능.
+   - **스마트 탐색**: 
+     - PMT에서 선택된 PID를 우선적으로 추적.
+     - 선택된 PID가 없으면 현재 패킷의 PID를 기준으로 탐색.
+   - **고속 탐색 모드**: 버튼 클릭 시 `x50` 배속으로 재생하며 탐색하고, `PES Start(PUSI=1)`를 발견하면 자동으로 정지.
+   - **정밀 검사**: 고속 재생 중에도 건너뛰는 패킷 없이 모든 패킷을 검사하여 Start 패킷을 놓치지 않음.
 
-### ④ `ts_parser_core.py` (Parsing Engine)
-- **역할**: 파일을 읽고 `ts_models`를 활용하여 데이터를 추출.
-- **기능**: Random Access(`read_packet_at`), 퀵 스캔.
+2. **UI/UX 개선**
+   - **직관적인 버튼 배치**: `>> PES Packet Start <<` 문구 양옆에 네비게이션 버튼 배치.
+   - **불필요한 텍스트 제거**: "Find Prev/Next Start" 텍스트를 제거하고 아이콘만 남김.
+   - **Start 상태 표시**: PES Start 패킷일 때도 네비게이션 버튼을 표시하여 연속적인 탐색 지원.
+   - **Play 모드 최적화**: 재생/탐색 중에는 Hex Dump 등 무거운 텍스트 렌더링을 생략하여 반응 속도 향상 ("Playback in progress...").
 
-### ⑤ `ts_scanner.py` (Background Scanner)
-- **역할**: 파일 전체 통계 수집.
-- **기능**: 백그라운드 스레드 동작, PID 점유율 분석, Markdown 리포트 생성.
+3. **버그 수정**
+   - PES Start 패킷 인식 오류 수정 (현재 패킷부터 검사하도록 로직 변경).
+   - 고속 탐색 시 패킷을 건너뛰어 멈추지 않는 문제 해결.
+   - 네비게이션 버튼 미표시 문제 해결.
 
----
-
-## 4. 주요 기능 (Key Features)
-
-1. **PES / Audio Deep Analysis**
-    - **Single/Multi Packet 구분**: PES 패킷이 단독인지 분할되었는지 판별.
-    - **Back-tracking**: Continuation 패킷에서 PES 시작점(Start)을 자동 역추적.
-    - **Audio Sync Check**: 오디오 스트림 내의 Sync Word(`0xFFF`) 패턴 자동 검색.
-    - **PTS/DTS**: 타임스탬프 파싱 및 초(s) 단위 표시.
-
-2. **Smart Navigation**
-    - **PID Filtering**: 특정 PID를 선택하면 해당 패킷 단위로 건너뛰며 탐색 가능.
-    - **BScan**: 백그라운드에서 파일 전체를 스캔하여 놓친 PID나 프로그램 정보를 찾아냄.
-
-3. **User-Friendly GUI**
-    - **Menu System**: File Open, Recent Files, Exit 지원.
-    - **Hex View**: 실시간 바이너리 덤프.
-    - **Tree View**: 직관적인 프로그램/스트림 계층 구조 확인.
-
----
-
-## 5. 사용 방법 (Usage)
+## 사용 방법 (Usage)
 ```bash
 python scripts/ts_analyzer_gui.py
 ```
-- **File > Open**: 분석할 TS 파일 선택.
-- **BScan**: 전체 파일 구조 분석.
-- **Tree View**: 프로그램 및 PID 선택 (마우스 클릭).
-- **PES View**: 선택된 PID의 상세 헤더 및 오디오 정보 확인.
+- **File**: TS 파일 열기 (Open) 또는 종료 (Exit).
+- **BScan**: 백그라운드 스캔 시작/중지 및 리포트 보기.
+- **Playback**: 하단 컨트롤 바 또는 키보드 단축키 사용.
+- **PES Jump**: PES 뷰의 `◀`, `▶` 버튼 클릭.
 
-## 6. 향후 계획 (To-Do)
-- [x] **기본 파싱**: PAT, PMT, TS Header.
-- [x] **GUI 구현**: Tree, Detail, Hex, Controls.
-- [x] **BScan**: 백그라운드 스캔 및 리포트.
-- [x] **PES 분석 강화**: Single/Multi 구분, 역추적(Back-tracking), Audio Sync.
-- [x] **코드 리팩토링**: UI 로직 분리(`ts_ui_manager`), 데이터 모델링(`ts_models`).
-- [ ] **PCR 분석**: PCR(Program Clock Reference) Jitter 및 간격 분석 그래프 추가.
-- [ ] **오디오 헤더 정밀 파싱**: MP2/AAC 헤더(Bitrate, Sample Rate) 상세 디코딩.
+## To-Do
+- [ ] 오디오 코덱별 상세 헤더 파싱 (MP2, AAC, AC3 등)
+- [ ] 비디오 프레임 타입(I/P/B) 분석 추가
+- [ ] PCR 클럭 분석 및 Jitter 그래프

@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 import os
 import sys
+import time
 import importlib.util
 
 # Core 및 Scanner 모듈 import
@@ -103,6 +104,7 @@ class AnalyzerGUI:
             if self.show_report:
                 self._draw_report_overlay(img)
             
+            self.canvas = img
             cv2.imshow(self.window_name, img)
             
             key = self._handle_playback()
@@ -243,15 +245,46 @@ class AnalyzerGUI:
 
         # PES 분석 및 출력
         if pusi:
-            # ... (기존 코드) ...
+            # === Case 1: PES Packet Start ===
+            cv2.putText(img, ">> PES Packet Start <<", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            cur_y += 30
+            
             pes_info = self.parser.parse_pes_header(payload)
             if pes_info:
-                # ...
+                # Stream ID
+                sid = pes_info['stream_id']
+                sid_str = f"Stream ID: 0x{sid:02X}"
+                if 0xC0 <= sid <= 0xDF: sid_str += " (Audio)"
+                elif 0xE0 <= sid <= 0xEF: sid_str += " (Video)"
+                elif sid == 0xBD: sid_str += " (Private)"
+                cv2.putText(img, sid_str, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                
+                # PES Packet Length
+                p_len = pes_info['pes_length']
+                len_str = f"Length: {p_len} bytes"
+                if p_len == 0: len_str += " (Unbounded/Video)"
+                cv2.putText(img, len_str, (x+250, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                 cur_y += 25
-                # PES Start 패킷은 자기 자신이 Start이므로 점프 불필요
+                
+                # PTS / DTS
+                pts = pes_info.get('pts')
+                dts = pes_info.get('dts')
+                if pts is not None:
+                    cv2.putText(img, f"PTS: {pts}", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 1)
+                if dts is not None:
+                    cv2.putText(img, f"DTS: {dts}", (x+200, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 1)
+                if pts or dts: cur_y += 25
             else:
-                 cv2.putText(img, "Invalid or Non-PES Header", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 255), 1)
-
+                cv2.putText(img, "[Error] Invalid PES Header", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                if len(payload) >= 8:
+                    dump = " ".join(f"{b:02X}" for b in payload[:8])
+                    cv2.putText(img, f"Raw: {dump}...", (x+20, cur_y+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+                    cur_y += 25
+            
+            # PES Start에서도 Navigation 버튼은 표시
+            found_start = True
+            start_idx = self.current_pkt_idx
+            
         else:
             # PES Continuation
             cv2.putText(img, ">> PES Continuation <<", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 2)
@@ -266,7 +299,8 @@ class AnalyzerGUI:
             search_limit = 5000 # 검색 범위 확대 (Video는 큼)
             dist = 0
             
-            for k in range(1, search_limit):
+            # 현재 패킷(k=0)부터 검색하도록 수정
+            for k in range(0, search_limit):
                 t_idx = self.current_pkt_idx - k
                 if t_idx < 0: break
                 
@@ -276,54 +310,118 @@ class AnalyzerGUI:
                 t_pid, t_pusi, t_adapt, _ = self.parser.parse_header(t_data)
                 
                 if t_pid == self.selected_pid:
-                    dist += 1
+                    # 현재 패킷(k=0)이 아니고 이전 패킷들이라면 count 증가
+                    if k > 0: dist += 1
+                    
                     t_off = 4
                     if t_adapt & 0x2: t_off = 5 + t_data[4]
+                    
+                    # Payload 길이 계산
                     if t_off < 188:
-                        acc_payload += (188 - t_off)
+                        if k > 0: acc_payload += (188 - t_off)
                     
                     if t_pusi:
                         found_start = True
                         start_idx = t_idx
                         
-                        # PES Total Length 파싱
+                        # PES Header Parsing
                         t_payload = t_data[t_off:]
                         pes_info = self.parser.parse_pes_header(t_payload)
-                        total_len = pes_info['pes_length'] if pes_info else 0
                         
-                        current_seq = dist + 1
-                        processed_bytes = acc_payload + curr_p_len
-                        
-                        prog_info = ""
-                        if total_len > 0:
-                            pct = (processed_bytes / total_len) * 100
-                            est_total_pkts = int((total_len + 6) / 184.0) + 1
-                            prog_info = f" | {pct:.1f}% ({processed_bytes}/{total_len})"
-                            seq_str = f"Seq: {current_seq} / ~{est_total_pkts}"
-                        else:
-                            seq_str = f"Seq: {current_seq} (Total Len Unknown)"
-                            prog_info = f" | Acc: {processed_bytes} bytes"
+                        if pes_info:
+                            total_len = pes_info['pes_length']
                             
-                        # Sequence 정보는 찾았을 때만 표시
-                        cv2.putText(img, seq_str + prog_info, (x+20, cur_y+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 100), 1)
+                            current_seq = dist + 1
+                            processed_bytes = acc_payload + curr_p_len
+                            
+                            prog_info = ""
+                            if total_len > 0:
+                                pct = (processed_bytes / total_len) * 100
+                                est_total_pkts = int((total_len + 6) / 184.0) + 1
+                                prog_info = f" | {pct:.1f}% ({processed_bytes}/{total_len})"
+                                seq_str = f"Seq: {current_seq} / ~{est_total_pkts}"
+                            else:
+                                seq_str = f"Seq: {current_seq} (Total Len Unknown)"
+                                prog_info = f" | Acc: {processed_bytes} bytes"
+                                
+                            cv2.putText(img, seq_str + prog_info, (x+20, cur_y+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 100), 1)
+                        else:
+                            # PES Parse Error Debugging
+                            cv2.putText(img, "[Error] Invalid PES Header (Start Code != 0x000001)", (x+20, cur_y+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                            if len(t_payload) >= 8:
+                                dump = " ".join(f"{b:02X}" for b in t_payload[:8])
+                                cv2.putText(img, f"Raw: {dump}...", (x+20, cur_y+45), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+                                cur_y += 20
                         break
             
-            # 점프 링크 표시 (찾았든 못 찾았든 표시)
-            link_color = (255, 255, 0) # Yellow
+            # 점프 링크 (삼각형 버튼 아이콘)
+            target_idx = start_idx if found_start else -2
             
-            if found_start:
-                text = f"<< Parent PES Start: Packet #{start_idx} (Jump) >>"
-                target_idx = start_idx
-            else:
-                text = "<< PES Continuation (Click to Find Start) >>"
-                target_idx = -2 # -2 indicates "Force Search"
+            # 버튼 위치
+            btn_x = x + 20
+            btn_y = cur_y - 15
+            btn_w, btn_h = 30, 25
+            
+            # 클릭 영역 저장
+            rect = (btn_x, btn_y, btn_x + btn_w + 300, btn_y + btn_h) # 텍스트까지 포함해서 넓게
+            self.pes_jump_target = {'rect': rect, 'idx': target_idx}
+            
+            # Hover Check
+            color = (255, 200, 0) # Yellow
+            if rect[0] <= self.mouse_x <= rect[2] and rect[1] <= self.mouse_y <= rect[3]:
+                color = (0, 255, 255) # Cyan
+                # 버튼 배경 박스
+                cv2.rectangle(img, (rect[0]-5, rect[1]-5), (rect[2], rect[3]+5), (60, 60, 80), -1)
+                cv2.rectangle(img, (rect[0]-5, rect[1]-5), (rect[2], rect[3]+5), (200, 200, 0), 1)
+
+            # PES Navigation UI
+            # Prev Button (Left Triangle)
+            btn_prev_rect = (x+20, cur_y-15, x+50, cur_y+10)
+            # Next Button (Right Triangle)
+            btn_next_rect = (x+350, cur_y-15, x+380, cur_y+10)
+            
+            self.pes_nav_targets = {
+                'prev': {'rect': btn_prev_rect, 'idx': start_idx if found_start else -2},
+                'next': {'rect': btn_next_rect}
+            }
+            
+            # 1. Draw Prev Button (<)
+            color = (255, 200, 0)
+            if btn_prev_rect[0] <= self.mouse_x <= btn_prev_rect[2] and btn_prev_rect[1] <= self.mouse_y <= btn_prev_rect[3]:
+                color = (0, 255, 255)
+                cv2.rectangle(img, (btn_prev_rect[0]-5, btn_prev_rect[1]-5), (btn_prev_rect[2]+5, btn_prev_rect[3]+5), (60, 60, 80), -1)
                 
-            cv2.putText(img, text, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, link_color, 1)
-            self.pes_jump_target = {'rect': (x+20, cur_y-15, x+400, cur_y+5), 'idx': target_idx}
-            cur_y += 25
+            pt1 = (btn_prev_rect[2], btn_prev_rect[1] + 5)
+            pt2 = (btn_prev_rect[2], btn_prev_rect[3] - 5)
+            pt3 = (btn_prev_rect[0] + 5, (btn_prev_rect[1] + btn_prev_rect[3]) // 2)
+            cv2.drawContours(img, [np.array([pt1, pt2, pt3])], 0, color, -1)
             
-            if found_start:
-                cur_y += 25 # Seq 정보 한 줄 더 띄우기
+            prev_txt = f"Parent Start #{start_idx}" if found_start else "Find Prev Start"
+            cv2.putText(img, prev_txt, (x+60, cur_y+5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            
+            # 2. Draw Next Button (>)
+            color_next = (255, 200, 0)
+            if btn_next_rect[0] <= self.mouse_x <= btn_next_rect[2] and btn_next_rect[1] <= self.mouse_y <= btn_next_rect[3]:
+                color_next = (0, 255, 255)
+                cv2.rectangle(img, (btn_next_rect[0]-5, btn_next_rect[1]-5), (btn_next_rect[2]+5, btn_next_rect[3]+5), (60, 60, 80), -1)
+            
+            pt1 = (btn_next_rect[0], btn_next_rect[1] + 5)
+            pt2 = (btn_next_rect[0], btn_next_rect[3] - 5)
+            pt3 = (btn_next_rect[2] - 5, (btn_next_rect[1] + btn_next_rect[3]) // 2)
+            cv2.drawContours(img, [np.array([pt1, pt2, pt3])], 0, color_next, -1)
+            
+            cv2.putText(img, "Find Next Start", (x+390, cur_y+5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_next, 1)
+
+            # 클릭 피드백
+            if hasattr(self, 'last_click_time') and hasattr(self, 'last_click_target'):
+                if time.time() - self.last_click_time < 0.2:
+                    if self.last_click_target == 'pes_prev':
+                         cv2.rectangle(img, btn_prev_rect[:2], btn_prev_rect[2:], (0, 0, 255), 2)
+                    elif self.last_click_target == 'pes_next':
+                         cv2.rectangle(img, btn_next_rect[:2], btn_next_rect[2:], (0, 0, 255), 2)
+
+            cur_y += 35
+            if found_start: cur_y += 10
 
             # Part of Multi-Packet PES 문구는 이제 위 링크로 대체되거나 아래에 보조로 표시
             # cv2.putText(img, "Part of Multi-Packet PES", ... ) # 생략 또는 유지
@@ -375,6 +473,11 @@ class AnalyzerGUI:
         cv2.rectangle(img, (x, y), (x+w, y+h), (20, 20, 20), -1)
         cv2.rectangle(img, (x, y), (x+w, y+h), (80, 80, 80), 1)
         cv2.putText(img, "Packet Binary Data (188 Bytes)", (x+10, y+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,0), 1)
+        
+        # Play 중에는 Hex Dump 생략 (성능 최적화)
+        if self.playing:
+             cv2.putText(img, "Playback in progress...", (x+50, y+100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 100, 100), 1)
+             return
         
         if not self.current_hex_data: return
         
@@ -491,25 +594,80 @@ class AnalyzerGUI:
         if event == cv2.EVENT_MOUSEMOVE:
             self.ui.handle_mouse_move(x, y)
         elif event == cv2.EVENT_LBUTTONDOWN:
+            print(f"[DEBUG] Mouse Click at ({x}, {y})")
             # 1. Menu & Button Click (Delegated to UIManager)
             if self.ui.handle_click(x, y):
                 return
 
-            # 2. PES Jump Link Click
-            if hasattr(self, 'pes_jump_target') and self.pes_jump_target:
-                jx1, jy1, jx2, jy2 = self.pes_jump_target['rect']
-                if jx1<=x<=jx2 and jy1<=y<=jy2:
-                    target = self.pes_jump_target['idx']
-                    if target >= 0:
-                        self.current_pkt_idx = target
-                    elif target == -2:
-                        # Force Search
-                        found = self._search_pes_start_backward()
-                        if found >= 0: self.current_pkt_idx = found
-                        else: print("PES Start not found even with deep search.")
+            # 2. PES Navigation Click
+            if hasattr(self, 'pes_nav_targets') and self.pes_nav_targets:
+                # Check Prev
+                if 'prev' in self.pes_nav_targets:
+                    r = self.pes_nav_targets['prev']['rect']
+                    if r[0]<=x<=r[2] and r[1]<=y<=r[3]:
+                        print("[DEBUG] Prev Clicked")
+                        self.last_click_time = time.time()
+                        self.last_click_target = 'pes_prev'
                         
-                    self.update_packet_view()
-                    return
+                        # Start Backward Playback Search
+                        # 1. Use Selected PID from PMT (Priority)
+                        target_pid = self.selected_pid
+                        
+                        # 2. Fallback: Current Packet PID
+                        if target_pid is None:
+                            data = self.parser.read_packet_at(self.current_pkt_idx)
+                            if data:
+                                import struct
+                                target_pid = (struct.unpack('>I', data[:4])[0] >> 8) & 0x1FFF
+                        
+                        if target_pid is not None:
+                            self.search_target_pid = target_pid
+                            self.playing = True
+                            self.speed = -50.0 # 고속 역방향
+                            self.pes_search_mode = True
+                            
+                            # 현재 패킷에서 바로 멈추지 않도록 한 칸 이동
+                            self.current_pkt_idx = max(0, self.current_pkt_idx - 1)
+                            
+                            print(f"[DEBUG] Search Prev PES Start (PID: 0x{target_pid:X})")
+                        else:
+                            print("[Error] No Target PID for Search")
+                        
+                        return # Playback 루프에서 처리됨
+
+                # Check Next
+                if 'next' in self.pes_nav_targets:
+                    r = self.pes_nav_targets['next']['rect']
+                    if r[0]<=x<=r[2] and r[1]<=y<=r[3]:
+                        print("[DEBUG] Next Clicked")
+                        self.last_click_time = time.time()
+                        self.last_click_target = 'pes_next'
+                        
+                        # Start Forward Playback Search
+                        # 1. Use Selected PID from PMT (Priority)
+                        target_pid = self.selected_pid
+                        
+                        # 2. Fallback: Current Packet PID
+                        if target_pid is None:
+                            data = self.parser.read_packet_at(self.current_pkt_idx)
+                            if data:
+                                import struct
+                                target_pid = (struct.unpack('>I', data[:4])[0] >> 8) & 0x1FFF
+
+                        if target_pid is not None:
+                            self.search_target_pid = target_pid
+                            self.playing = True
+                            self.speed = 50.0 # 고속 정방향
+                            self.pes_search_mode = True
+                            
+                            # 현재 패킷에서 바로 멈추지 않도록 한 칸 이동
+                            self.current_pkt_idx += 1
+                            
+                            print(f"[DEBUG] Search Next PES Start (PID: 0x{target_pid:X})")
+                        else:
+                            print("[Error] No Target PID for Search")
+
+                        return # Playback 루프에서 처리됨
 
             # 3. Tree View Selection
             # PAT 영역 (y: 60~480)
@@ -601,6 +759,10 @@ class AnalyzerGUI:
         self.bscan_running = False
         self.show_report = False
         
+        # PES Search State
+        self.pes_search_mode = False
+        self.search_target_pid = None
+        
         # Init Scan (UI blocking for short time)
         self.parser.quick_scan(limit=20000)
         
@@ -650,7 +812,27 @@ class AnalyzerGUI:
 
     def _search_pes_start_backward(self):
         """현재 위치에서 뒤로 가며 PES Start(PUSI=1)를 찾음 (Deep Search)"""
-        if not self.selected_pid: return -1
+        print("[DEBUG] Start Backward Search")
+        
+        # Searching 표시
+        if hasattr(self, 'canvas'):
+            temp_img = self.canvas.copy()
+            cv2.rectangle(temp_img, (500, 400), (1100, 500), (0, 0, 0), -1)
+            cv2.rectangle(temp_img, (500, 400), (1100, 500), (0, 255, 255), 2)
+            cv2.putText(temp_img, "Searching Previous PES Start...", (520, 460), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            cv2.imshow("MPEG2-TS Analyzer", temp_img)
+            cv2.waitKey(1)
+
+        # 현재 패킷의 PID를 타겟으로 설정
+        import struct
+        data = self.parser.read_packet_at(self.current_pkt_idx)
+        if not data: 
+            print("[DEBUG] No data at current index")
+            return -1
+            
+        header = struct.unpack('>I', data[:4])[0]
+        target_pid = (header >> 8) & 0x1FFF
+        print(f"[DEBUG] Target PID: 0x{target_pid:X}")
         
         # 최대 500,000 패킷 (약 90MB) 검색
         max_search = 500000
@@ -663,10 +845,57 @@ class AnalyzerGUI:
             data = self.parser.read_packet_at(idx)
             if not data: break
             
-            pid, pusi, _, _ = self.parser.parse_header(data)
-            if pid == self.selected_pid and pusi:
-                return idx
-                
+            # PID 및 PUSI 직접 파싱 (속도 최적화)
+            h = struct.unpack('>I', data[:4])[0]
+            pid = (h >> 8) & 0x1FFF
+            pusi = (h >> 22) & 0x1
+            
+            if pid == target_pid:
+                if pusi:
+                    print(f"[DEBUG] Found PES Start at #{idx}")
+                    return idx
+        
+        print("[DEBUG] PES Start not found in backward search")
+        return -1
+
+    def _search_pes_start_forward(self):
+        """현재 위치에서 앞으로 가며 다음 PES Start(PUSI=1)를 찾음"""
+        print("[DEBUG] Start Forward Search")
+        
+        # Searching 표시
+        if hasattr(self, 'canvas'):
+            temp_img = self.canvas.copy()
+            cv2.rectangle(temp_img, (500, 400), (1100, 500), (0, 0, 0), -1)
+            cv2.rectangle(temp_img, (500, 400), (1100, 500), (0, 255, 255), 2)
+            cv2.putText(temp_img, "Searching Next PES Start...", (540, 460), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            cv2.imshow("MPEG2-TS Analyzer", temp_img)
+            cv2.waitKey(1)
+
+        import struct
+        data = self.parser.read_packet_at(self.current_pkt_idx)
+        if not data: return -1
+        header = struct.unpack('>I', data[:4])[0]
+        target_pid = (header >> 8) & 0x1FFF
+        print(f"[DEBUG] Target PID: 0x{target_pid:X}")
+        
+        max_search = 500000
+        curr = self.current_pkt_idx
+        
+        for k in range(1, max_search):
+            idx = curr + k
+            data = self.parser.read_packet_at(idx)
+            if not data: break # EOF
+            
+            h = struct.unpack('>I', data[:4])[0]
+            pid = (h >> 8) & 0x1FFF
+            pusi = (h >> 22) & 0x1
+            
+            if pid == target_pid:
+                if pusi:
+                    print(f"[DEBUG] Found PES Start at #{idx}")
+                    return idx
+        
+        print("[DEBUG] PES Start not found in forward search")
         return -1
 
     def update_packet_view(self):
@@ -682,13 +911,55 @@ class AnalyzerGUI:
                 if data: self.current_hex_data = data
 
     def _handle_playback(self):
-        wait = 10 # 기본 대기 시간 단축 (반응성 향상)
+        wait = 10
         if self.playing:
-            self.current_pkt_idx += int(self.speed)
-            if self.current_pkt_idx < 0: self.current_pkt_idx = 0
-            self.update_packet_view()
-            if self.speed == 1.0: wait = 10
-            else: wait = 1
+            # === 1. 일반 재생 모드 ===
+            if not hasattr(self, 'pes_search_mode') or not self.pes_search_mode:
+                self.current_pkt_idx += int(self.speed)
+                if self.current_pkt_idx < 0: self.current_pkt_idx = 0
+                self.update_packet_view()
+                if self.speed == 1.0: wait = 10
+                else: wait = 1
+            
+            # === 2. PES 탐색 모드 (정밀 검사) ===
+            else:
+                # 고속 이동하되, 건너뛰지 않고 모든 패킷 검사
+                step = 1 if self.speed > 0 else -1
+                steps_to_check = abs(int(self.speed)) # 예: 50개씩 검사
+                
+                found = False
+                for _ in range(steps_to_check):
+                    self.current_pkt_idx += step
+                    if self.current_pkt_idx < 0: 
+                        self.current_pkt_idx = 0
+                        self.playing = False
+                        self.pes_search_mode = False
+                        break
+                        
+                    data = self.parser.read_packet_at(self.current_pkt_idx)
+                    if not data: 
+                        self.playing = False # EOF
+                        self.pes_search_mode = False
+                        break
+                    
+                    import struct
+                    h = struct.unpack('>I', data[:4])[0]
+                    pid = (h >> 8) & 0x1FFF
+                    pusi = (h >> 22) & 0x1
+                    
+                    if pid == self.search_target_pid and pusi:
+                        print(f"[DEBUG] Found PES Start at {self.current_pkt_idx}")
+                        found = True
+                        break # 찾음! 루프 탈출
+                
+                if found:
+                    self.playing = False # 정지
+                    self.pes_search_mode = False
+                    self.speed = 1.0
+
+                self.update_packet_view()
+                wait = 1 # 빠른 갱신
+
         return cv2.waitKey(wait) & 0xFF
 
     def _launch_player(self):

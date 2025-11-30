@@ -2,6 +2,7 @@ import cv2
 import os
 import json
 import sys
+import time
 import tkinter as tk
 from tkinter import filedialog
 import numpy as np
@@ -14,6 +15,7 @@ class UIManager:
         self.gui = gui_context
         self.menu_open = False
         self.hover_btn = None
+        self.clicked_btn_info = None # {'name': str, 'time': float}
         self.recent_files = []
         self._load_recents()
         self.menu_items_rects = []
@@ -67,6 +69,7 @@ class UIManager:
         for btn in self.buttons:
             x1, y1, x2, y2 = btn['rect']
             color = (60, 60, 60)
+            if btn == self.hover_btn: color = (80, 80, 80)
             
             label = btn['label']
             if btn['name'] == 'play':
@@ -85,12 +88,19 @@ class UIManager:
                     color = (0, 100, 100)
                 else: color = (50, 50, 50)
             
+            # Click Effect
+            if self.clicked_btn_info and btn['name'] == self.clicked_btn_info['name']:
+                if time.time() - self.clicked_btn_info['time'] < 0.15:
+                    color = (150, 150, 180) # Flash color
+
+            # Hover Effect (배경색 밝게 + 테두리 강조)
             border_color = (150, 150, 150)
             thickness = 1
             
             if btn == self.hover_btn:
                 if not (btn['name'] == 'bscan' and self.gui.scanner.running) and not (btn['name'] == 'play' and self.gui.playing):
-                     color = (90, 90, 110)
+                     if not (self.clicked_btn_info and btn['name'] == self.clicked_btn_info['name'] and time.time() - self.clicked_btn_info['time'] < 0.15):
+                        color = (90, 90, 110)
                 border_color = (0, 255, 255)
                 thickness = 2
 
@@ -102,7 +112,6 @@ class UIManager:
             ty = y1 + (y2-y1+ts[1])//2
             cv2.putText(img, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
 
-        # Status Text
         status_text = "READY"
         status_color = (200, 200, 200)
         if self.gui.scanner.running:
@@ -115,40 +124,67 @@ class UIManager:
             status_text = "PAUSED"
             status_color = (255, 255, 0)
         cv2.putText(img, status_text, (700, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
+        
+        if self.menu_open:
+            self.draw_menu(img)
 
     def draw_menu(self, img):
-        if not self.menu_open: return
+        # File Button 위치 찾기
+        file_btn = next((b for b in self.buttons if b['name'] == 'file'), None)
+        if not file_btn: return
         
-        bx, by, bw, bh = self.buttons[0]['rect']
-        x = bx
-        y = bh + 5
-        w = 250
+        bx1, by1, bx2, by2 = file_btn['rect']
+        menu_w = 200
+        menu_h = 150 # Recent 포함해서 늘림
         
-        items = [('Open File...', 'open'), ('Exit', 'exit')]
-        if self.recent_files:
-            items.insert(1, ('--- Recent Files ---', None))
-            for i, f in enumerate(self.recent_files):
-                fname = os.path.basename(f)
-                items.insert(2+i, (f"{i+1}. {fname}", f'recent_{i}'))
+        mx = bx1
+        my = by2 + 5
         
-        h = len(items) * 30 + 10
-        cv2.rectangle(img, (x, y), (x+w, y+h), (50, 50, 50), -1)
-        cv2.rectangle(img, (x, y), (x+w, y+h), (200, 200, 200), 1)
+        # 메뉴 배경
+        cv2.rectangle(img, (mx, my), (mx+menu_w, my+menu_h), (40, 40, 40), -1)
+        cv2.rectangle(img, (mx, my), (mx+menu_w, my+menu_h), (100, 100, 100), 1)
         
-        cy = y + 25
         self.menu_items_rects = []
         
+        # Menu Items
+        items = [('Open', 'open'), ('Exit', 'exit')]
+        cy = my + 25
+        
         for label, action in items:
-            color = (255, 255, 255)
-            if action is None: color = (150, 150, 150)
+            # Hover Check
+            color = (200, 200, 200)
+            if mx <= self.gui.mouse_x <= mx+menu_w and cy-20 <= self.gui.mouse_y <= cy+5:
+                color = (0, 255, 255)
+                cv2.rectangle(img, (mx+2, cy-20), (mx+menu_w-2, cy+5), (60, 60, 80), -1)
             
-            if action and x <= self.gui.mouse_x <= x+w and cy-20 <= self.gui.mouse_y <= cy+5:
-                cv2.rectangle(img, (x+2, cy-20), (x+w-2, cy+5), (80, 80, 100), -1)
+            cv2.putText(img, label, (mx+10, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 1)
+            self.menu_items_rects.append({'action': action, 'rect': (mx, cy-20, mx+menu_w, cy+5)})
+            cy += 30
             
-            cv2.putText(img, label, (x+10, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+        # Divider
+        cv2.line(img, (mx+5, cy-10), (mx+menu_w-5, cy-10), (100, 100, 100), 1)
+        cy += 10
+        
+        # Recent Files
+        cv2.putText(img, "Recent Files:", (mx+10, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+        cy += 25
+        
+        for i, path in enumerate(self.recent_files[:3]): # 최대 3개만 표시
+            fname = os.path.basename(path)
+            if len(fname) > 20: fname = fname[:17] + "..."
             
-            if action:
-                self.menu_items_rects.append({'action': action, 'rect': (x, cy-20, x+w, cy+5)})
+            action = f"recent_{i}"
+            
+            color = (180, 180, 180)
+            x = mx
+            w = menu_w
+            
+            if mx <= self.gui.mouse_x <= mx+w and cy-20 <= self.gui.mouse_y <= cy+5:
+                color = (0, 255, 255)
+                cv2.rectangle(img, (x+2, cy-20), (x+w-2, cy+5), (60, 60, 80), -1)
+                
+            cv2.putText(img, f"{i+1}. {fname}", (x+10, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            self.menu_items_rects.append({'action': action, 'rect': (x, cy-20, x+w, cy+5)})
             
             cy += 30
 
@@ -179,6 +215,7 @@ class UIManager:
 
         # 2. Button Click
         if self.hover_btn:
+            self.clicked_btn_info = {'name': self.hover_btn['name'], 'time': time.time()}
             self._handle_btn_action(self.hover_btn['name'])
             return True # UI에서 처리됨
             
@@ -205,28 +242,6 @@ class UIManager:
             self.gui.load_file(path) # Main GUI의 로드 메서드 호출
 
     def _handle_btn_action(self, name):
-        if name == 'file':
-            self.menu_open = not self.menu_open
-        elif name == 'play': self.gui._toggle_play()
-        elif name == 'stop': 
-            self.gui.playing = False
-            self.gui.current_pkt_idx = 0
-            self.gui.update_packet_view()
-        elif name == 'rev':
-            if self.gui.playing: self.gui.speed = -1.0
-            else: self.gui._step_packet(-1)
-        elif name == 'ff':
-            if self.gui.playing: self.gui.speed = 2.0
-            else: self.gui._step_packet(1)
-        elif name == 'ext_play':
-            self.gui._launch_player()
-        elif name == 'bscan':
-            if self.gui.scanner.running: 
-                self.gui.scanner.stop()
-            elif self.gui.scanner.completed:
-                self.gui.bscan_running = True
-            else: 
-                self.gui.scanner.start()
-        elif name == 'prev': self.gui._step_packet(-1)
-        elif name == 'next': self.gui._step_packet(1)
-
+        # Main GUI의 메서드 호출
+        if hasattr(self.gui, '_handle_btn'):
+            self.gui._handle_btn(name)
