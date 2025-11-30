@@ -21,6 +21,7 @@ class TSScanner:
     def __init__(self, parser_instance):
         self.parser = parser_instance       # 파싱 도구 및 데이터 저장소 공유 (TSParser 객체)
         self.running = False                # 스캔 루프 실행 여부 플래그
+        self.completed = False              # 스캔 완료 여부
         self._thread = None                 # 백그라운드 작업 스레드
         self.file_path = parser_instance.file_path  # 분석할 파일 경로
         self.report = []                    # 분석 결과 리포트
@@ -28,6 +29,11 @@ class TSScanner:
     def start(self):
         """백그라운드 스캔 스레드 시작"""
         if self.running: return             # 이미 실행 중이면 무시
+        
+        # 재시작 시 초기화
+        self.parser.packet_count = 0
+        self.parser.pid_counts = {}
+        self.completed = False
         
         self.running = True                 # 실행 플래그 ON
         self._thread = threading.Thread(target=self._scan_loop)
@@ -84,6 +90,7 @@ class TSScanner:
         self._save_report_to_file()
         
         self.parser.last_log = "Scanner: Completed. Report Saved."
+        self.completed = True
         self.running = False
 
     def _generate_report(self):

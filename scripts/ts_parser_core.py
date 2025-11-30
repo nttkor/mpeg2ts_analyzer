@@ -180,3 +180,55 @@ class TSParser:
                 self.pid_map[epid] = {'type': stype, 'desc': desc}
             
             i += 5 + es_len
+
+    def parse_pes_header(self, payload):
+        """
+        PES 헤더를 파싱하여 딕셔너리로 반환
+        :param payload: TS 패킷의 Payload (Byte string)
+        """
+        if len(payload) < 6: return None
+        
+        # Start Code Prefix (3 bytes) + Stream ID (1 byte) + PES Packet Length (2 bytes)
+        start_code = struct.unpack('>I', b'\x00' + payload[:3])[0]
+        if start_code != 1: return None
+        
+        stream_id = payload[3]
+        pes_length = struct.unpack('>H', payload[4:6])[0]
+        
+        info = {
+            'stream_id': stream_id,
+            'pes_length': pes_length,
+            'pts': None,
+            'dts': None
+        }
+        
+        # Optional PES Header
+        # Stream ID check: video, audio, private_1 (BD)
+        if (0xC0 <= stream_id <= 0xEF) or stream_id == 0xBD:
+            if len(payload) > 9:
+                flags_2 = payload[7]
+                pts_dts_flag = (flags_2 >> 6) & 0x3
+                header_len = payload[8]
+                
+                # PTS/DTS Parsing
+                if pts_dts_flag == 2: # PTS only
+                    if len(payload) >= 14:
+                        pts = self._parse_pts(payload[9:14])
+                        info['pts'] = pts
+                elif pts_dts_flag == 3: # PTS and DTS
+                    if len(payload) >= 19:
+                        pts = self._parse_pts(payload[9:14])
+                        dts = self._parse_pts(payload[14:19])
+                        info['pts'] = pts
+                        info['dts'] = dts
+                
+        return info
+
+    def _parse_pts(self, data):
+        # 33-bit PTS parsing logic
+        if len(data) < 5: return 0
+        val = struct.unpack('>Q', b'\x00\x00\x00' + data)[0]
+        pts = ((val >> 29) & 0x0E) << 29 | \
+              ((val >> 14) & 0xFFFE) << 14 | \
+              ((val >> 0) & 0xFFFE) >> 1
+        return pts
