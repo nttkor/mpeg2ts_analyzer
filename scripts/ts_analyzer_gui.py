@@ -23,7 +23,7 @@ from ts_ui_manager import UIManager
 
 # --- GUI 설정 ---
 FONT_BTN = 0.6
-FONT_HEX = 0.35
+FONT_HEX = 0.45 # 0.40 -> 0.45 (폰트 더 확대)
 FONT_TREE = 0.4
 COLOR_BG = (30, 30, 30)
 
@@ -49,6 +49,11 @@ class AnalyzerGUI:
         
         # Jitter Analysis State
         self.show_jitter = False
+        
+        # Interactive Highlight State
+        self.ui_regions = []        # 매 프레임 UI 영역 정보 저장 [{'rect':(x1,y1,x2,y2), 'range':(start, end), 'color':(b,g,r), 'name':str}]
+        self.hover_region = None    # 현재 마우스 오버된 영역
+        self.selected_region = None # 클릭으로 고정된 영역
         
         # Filter States (Video, Audio, PCR, PTS, DTS)
         self.active_filters = {
@@ -102,6 +107,9 @@ class AnalyzerGUI:
             img = np.zeros((900, 1400, 3), dtype=np.uint8)
             img[:] = COLOR_BG
             
+            # UI 영역 초기화
+            self.ui_regions = []
+            
             self.draw_layout(img)
             
             # BScan 상태 관리
@@ -143,14 +151,17 @@ class AnalyzerGUI:
         self._draw_pat_view(img, 0, 60, 400, 420)
         self._draw_pmt_view(img, 0, 480, 400, 420)
         
-        # Right: Detail / PES / Hex (3분할, 높이 280씩)
+        # Right: Detail / PES / Hex (3분할, 높이 조정)
+        # Detail: 60 ~ 340 (280)
+        # PES: 340 ~ 560 (220) - 30px 추가 축소
+        # Hex: 560 ~ 900 (340) - 30px 추가 확대 및 위로 이동
         self._draw_detail(img, 400, 60, 1000, 280)
-        self._draw_pes_view(img, 400, 340, 1000, 280)
+        self._draw_pes_view(img, 400, 340, 1000, 220)
         
         if self.scanner.running:
-            self._draw_scan_status(img, 400, 620, 1000, 280)
+            self._draw_scan_status(img, 400, 560, 1000, 340)
         else:
-            self._draw_hex(img, 400, 620, 1000, 280)
+            self._draw_hex(img, 400, 560, 1000, 340)
 
         # Draw Menu Overlay (Always on top)
         if self.ui.menu_open:
@@ -363,7 +374,38 @@ class AnalyzerGUI:
         # PES 분석 및 출력
         if pusi:
             # === Case 1: PES Packet Start ===
-            cv2.putText(img, ">> PES Packet Start <<", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            pes_title = ">> PES Packet Start <<"
+            (tw, th), _ = cv2.getTextSize(pes_title, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            
+            # Interactive Region: PES Header
+            region_key = 'PES Header'
+            is_active = (self.selected_region and self.selected_region['name'] == region_key) or \
+                        (self.hover_region and self.hover_region['name'] == region_key)
+                        
+            if is_active:
+                cv2.rectangle(img, (x+20-5, cur_y-th-5), (x+20+tw+5, cur_y+5), (50, 100, 100), -1) # Yellow-ish bg
+                
+            cv2.putText(img, pes_title, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            
+            # Register Region (Range 계산)
+            # PES Header Range: off ~ off + (header length)
+            # PES Packet structure: Prefix(3)+StreamID(1)+Length(2) = 6 bytes
+            # If StreamID != ... : + Optional Header
+            if len(payload) >= 9: # Min required
+                # PES Header Length (Optional Header Length at index 8)
+                # payload[8] = PES_header_data_length
+                # Total PES Header size from payload start = 6 + 3 + payload[8]
+                # (Prefix~Length) + (Flags~HeaderLen) + (HeaderData)
+                pes_hdr_len = 6 + 3 + payload[8]
+                if pes_hdr_len > len(payload): pes_hdr_len = len(payload)
+                
+                self.ui_regions.append({
+                    'name': region_key,
+                    'rect': (x+20-5, cur_y-th-5, x+20+tw+5, cur_y+5),
+                    'range': (off, off + pes_hdr_len),
+                    'color': (0, 255, 255) # Yellow
+                })
+            
             cur_y += 30
             
             pes_info = self.parser.parse_pes_header(payload)
@@ -567,76 +609,135 @@ class AnalyzerGUI:
         col1_x = x + 20
         col2_x = x + 500
         cur_y = y + 50
-        line_h = 25
+        line_h = 22 # 줄간격 축소 (25 -> 22)
+        font_size = 0.5 # 폰트 확대 (0.45 -> 0.5)
         
-        # --- Column 1: TS Header Fixed Part ---
-        cv2.putText(img, f"[TS Header] Packet Index: {self.current_pkt_idx}", (col1_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 255, 255), 1)
-        cur_y += line_h
+        # --- Column 1: TS Header Fixed Part (4 Bytes) ---
+        # Interactive Region 등록: TS Header (전체)
+        header_title = f"[TS Header] Packet Index: {self.current_pkt_idx}"
+        (tw, th), _ = cv2.getTextSize(header_title, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         
-        # Fixed Header Fields
-        fields = [
-            f"Sync Byte: 0x47",
-            f"Transport Error Indicator (TEI): {tei}",
-            f"Payload Unit Start Indicator (PUSI): {pusi}",
-            f"Transport Priority: {prio}"
-        ]
-        for f in fields:
-            cv2.putText(img, f, (col1_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
-            cur_y += line_h
+        # Draw Background if Active
+        region_key = 'TS Header'
+        is_active = (self.selected_region and self.selected_region['name'] == region_key) or \
+                    (self.hover_region and self.hover_region['name'] == region_key)
+        
+        if is_active:
+            cv2.rectangle(img, (col1_x-5, cur_y-th-5), (col1_x+tw+5, cur_y+5), (100, 50, 50), -1) # Red-ish bg
             
-        # PID (Highlight if matches selected)
-        pid_color = (0, 255, 0) if pid == self.selected_pid else (200, 200, 200)
-        pid_desc = self.parser.pid_map.get(pid, {}).get('desc', 'Unknown')
-        cv2.putText(img, f"PID: 0x{pid:04X} ({pid}) - {pid_desc}", (col1_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, pid_color, 1)
+        cv2.putText(img, header_title, (col1_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 255, 255), 1)
+        
+        # Register Region (Range: 0~4)
+        self.ui_regions.append({
+            'name': region_key,
+            'rect': (col1_x-5, cur_y-th-5, col1_x+tw+5, cur_y+5),
+            'range': (0, 4),
+            'color': (50, 50, 200) # Red
+        })
         cur_y += line_h
         
-        fields2 = [
-            f"Transport Scrambling Control: {scram}",
-            f"Adaptation Field Control: {adapt} ({['Reserved', 'Payload Only', 'Adapt Only', 'Adapt + Payload'][adapt]})",
-            f"Continuity Counter: {cnt}"
-        ]
-        for f in fields2:
-            cv2.putText(img, f, (col1_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+        # Helper for field drawing
+        def draw_field(text, region_name, byte_range, color=(200, 200, 200), bg_color=(80, 80, 100)):
+            nonlocal cur_y
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_size, 1)
+            
+            is_active = (self.selected_region and self.selected_region['name'] == region_name) or \
+                        (self.hover_region and self.hover_region['name'] == region_name)
+            
+            if is_active:
+                cv2.rectangle(img, (col1_x-5, cur_y-th-5), (col1_x+tw+5, cur_y+5), bg_color, -1)
+                
+            cv2.putText(img, text, (col1_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, font_size, color, 1)
+            
+            self.ui_regions.append({
+                'name': region_name,
+                'rect': (col1_x-5, cur_y-th-5, col1_x+tw+5, cur_y+5),
+                'range': byte_range,
+                'color': (0, 255, 255) # Yellow Highlight in Hex
+            })
             cur_y += line_h
 
+        # Fixed Header Fields (Byte 0, 1)
+        draw_field(f"Sync Byte: 0x47", "Sync Byte", (0, 1))
+        draw_field(f"Transport Error Indicator (TEI): {tei}", "TEI", (1, 2))
+        draw_field(f"Payload Unit Start Indicator (PUSI): {pusi}", "PUSI", (1, 2))
+        draw_field(f"Transport Priority: {prio}", "Transport Priority", (1, 2))
+            
+        # PID (Byte 1, 2)
+        pid_color = (0, 255, 0) if pid == self.selected_pid else (200, 200, 200)
+        pid_desc = self.parser.pid_map.get(pid, {}).get('desc', 'Unknown')
+        draw_field(f"PID: 0x{pid:04X} ({pid}) - {pid_desc}", "PID", (1, 3), color=pid_color)
+        
+        # Flags & Counters (Byte 3)
+        draw_field(f"Transport Scrambling Control: {scram}", "Scrambling", (3, 4))
+        draw_field(f"Adaptation Field Control: {adapt}", "Adaptation Control", (3, 4))
+        draw_field(f"Continuity Counter: {cnt}", "Continuity Counter", (3, 4))
+
         # --- Column 2: Adaptation Field Detail ---
+        # Reset Y for Col 2 (but keep draw_field helper adapting to x)
+        save_col1_x = col1_x
+        col1_x = col2_x # Hack to reuse draw_field
         cur_y = y + 50
+        
         if adapt_info['exist']:
-            cv2.putText(img, "[Adaptation Field]", (col2_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 255, 150), 1)
+            # Adaptation Field Header
+            adapt_title = "[Adaptation Field]"
+            (tw, th), _ = cv2.getTextSize(adapt_title, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            
+            region_key = 'Adaptation Field'
+            is_active = (self.selected_region and self.selected_region['name'] == region_key) or \
+                        (self.hover_region and self.hover_region['name'] == region_key)
+            
+            if is_active:
+                cv2.rectangle(img, (col2_x-5, cur_y-th-5), (col2_x+tw+5, cur_y+5), (50, 100, 50), -1)
+
+            cv2.putText(img, adapt_title, (col2_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 255, 150), 1)
+            
+            a_len = self.current_hex_data[4]
+            self.ui_regions.append({
+                'name': region_key,
+                'rect': (col2_x-5, cur_y-th-5, col2_x+tw+5, cur_y+5),
+                'range': (4, 5 + a_len),
+                'color': (50, 200, 50)
+            })
             cur_y += line_h
             
-            cv2.putText(img, f"Adaptation Field Length: {adapt_info['length']}", (col2_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
-            cur_y += line_h
+            # Length (Byte 4)
+            draw_field(f"Adaptation Field Length: {adapt_info['length']}", "Adapt Length", (4, 5))
             
             if adapt_info['length'] > 0:
-                flags_list = [
-                    f"Discontinuity Indicator: {adapt_info['discontinuity']}",
-                    f"Random Access Indicator: {adapt_info['random_access']}",
-                    f"ES Priority Indicator: {adapt_info['es_priority']}",
-                    f"PCR Flag: {adapt_info['pcr_flag']}",
-                    f"OPCR Flag: {adapt_info['opcr_flag']}",
-                    f"Splicing Point Flag: {adapt_info['splicing_point_flag']}"
-                ]
-                for f in flags_list:
-                    cv2.putText(img, f, (col2_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
-                    cur_y += line_h
+                # Flags (Byte 5)
+                flags_range = (5, 6)
+                draw_field(f"Discontinuity Indicator: {adapt_info['discontinuity']}", "Discontinuity", flags_range)
+                draw_field(f"Random Access Indicator: {adapt_info['random_access']}", "Random Access", flags_range)
+                draw_field(f"ES Priority Indicator: {adapt_info['es_priority']}", "ES Priority", flags_range)
+                draw_field(f"PCR Flag: {adapt_info['pcr_flag']}", "PCR Flag", flags_range)
+                draw_field(f"OPCR Flag: {adapt_info['opcr_flag']}", "OPCR Flag", flags_range)
+                draw_field(f"Splicing Point Flag: {adapt_info['splicing_point_flag']}", "Splicing Point", flags_range)
                 
-                # PCR Value Display
+                # Optional Fields Offset Calculation
+                curr_off = 6
                 if adapt_info['pcr'] is not None:
-                    cur_y += 5
                     pcr_val = adapt_info['pcr']
                     pcr_sec = pcr_val / 27_000_000.0
-                    
-                    # PTS/DTS와 동일한 스타일로 한 줄 표시 (Label "PCR Value" -> "PCR" 단축)
                     pcr_str = f">> PCR: {pcr_val} ({pcr_sec:.6f}s)"
-                    cv2.putText(img, pcr_str, (col2_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-                    cur_y += line_h
+                    # PCR is 6 bytes (48 bits)
+                    draw_field(pcr_str, "PCR Value", (curr_off, curr_off+6), color=(0, 255, 255))
+                    curr_off += 6
                     
                 if adapt_info['opcr'] is not None:
-                    cv2.putText(img, f"OPCR: {adapt_info['opcr']}", (col2_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
-                    cur_y += line_h
+                    # OPCR is 6 bytes
+                    draw_field(f"OPCR: {adapt_info['opcr']}", "OPCR Value", (curr_off, curr_off+6))
+                    curr_off += 6
+                    
+                if adapt_info['splicing_point_flag']:
+                    draw_field("Splicing Point: ...", "Splicing Point", (curr_off, curr_off+1))
+                    curr_off += 1
+                    
         else:
             cv2.putText(img, "[No Adaptation Field]", (col2_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
+            
+        col1_x = save_col1_x # Restore
 
     def _draw_hex(self, img, x, y, w, h):
         cv2.rectangle(img, (x, y), (x+w, y+h), (20, 20, 20), -1)
@@ -650,15 +751,70 @@ class AnalyzerGUI:
         
         if not self.current_hex_data: return
         
+        # Highlight Info 준비
+        hl_start, hl_end, hl_color = -1, -1, None
+        
+        target = self.selected_region if self.selected_region else self.hover_region
+        if target:
+            hl_start, hl_end = target['range']
+            hl_color = target['color']
+        
         sy = y + 50
+        char_w = 14 # 폰트 0.45일 때 대략적인 글자 너비 (조정 필요)
+        
         for i in range(0, 188, 16):
             chunk = self.current_hex_data[i:i+16]
             hexs = " ".join(f"{b:02X}" for b in chunk)
             asc = "".join((chr(b) if 32<=b<127 else ".") for b in chunk)
-            ly = sy + (i//16)*20
+            
+            # 줄간격 20 -> 24 확대
+            ly = sy + (i//16)*24 
+            
+            # Highlight Box Drawing
+            if hl_color and hl_end > i and hl_start < i + 16:
+                # 이 행(Row)에 하이라이트가 포함됨
+                row_start = max(i, hl_start)
+                row_end = min(i + 16, hl_end)
+                
+                # Column Index (0~15)
+                c_s = row_start - i
+                c_e = row_end - i
+                
+                # Hex Part Box
+                # Hex Start X: x+60
+                # 각 바이트 "XX " = 3 chars. 
+                # Box Start: x + 60 + c_s * (3 * char_w)
+                # Box End: x + 60 + c_e * (3 * char_w) - space
+                
+                # 정밀한 좌표 계산을 위해 getTextSize 사용 권장하지만, 성능을 위해 고정폭 근사
+                # FONT_HEX 0.45 기준 "00 " 너비 약 36px?
+                # 실제 렌더링: (x+60, ly)에서 시작.
+                
+                # Hex 영역 박스
+                hex_step_x = 33 # 글자간격 튜닝
+                box_x1 = x + 60 + int(c_s * hex_step_x)
+                box_x2 = x + 60 + int(c_e * hex_step_x) - 5
+                box_y1 = ly - 18
+                box_y2 = ly + 6
+                
+                cv2.rectangle(img, (box_x1, box_y1), (box_x2, box_y2), hl_color, 2)
+                
+                # ASCII 영역 박스 (Optional)
+                # Start X: x+490
+                # Char Step: 12 px?
+                asc_step_x = 14
+                box_ax1 = x + 490 + int(c_s * asc_step_x)
+                box_ax2 = x + 490 + int(c_e * asc_step_x)
+                
+                # ASCII는 겹침 방지를 위해 은은하게
+                overlay = img.copy()
+                cv2.rectangle(overlay, (box_ax1, box_y1), (box_ax2, box_y2), hl_color, -1)
+                cv2.addWeighted(overlay, 0.3, img, 0.7, 0, img)
+
             cv2.putText(img, f"{i:02X}:", (x+10, ly), cv2.FONT_HERSHEY_SIMPLEX, FONT_HEX, (150, 150, 150), 1)
-            cv2.putText(img, hexs, (x+50, ly), cv2.FONT_HERSHEY_SIMPLEX, FONT_HEX, (200,200,200), 1)
-            cv2.putText(img, asc, (x+350, ly), cv2.FONT_HERSHEY_SIMPLEX, FONT_HEX, (100,255,100), 1)
+            cv2.putText(img, hexs, (x+60, ly), cv2.FONT_HERSHEY_SIMPLEX, FONT_HEX, (200,200,200), 1)
+            # ASCII Text 오른쪽으로 추가 이동 (450 -> 490)
+            cv2.putText(img, asc, (x+490, ly), cv2.FONT_HERSHEY_SIMPLEX, FONT_HEX, (100,255,100), 1)
 
     def _draw_controls(self, img):
         for btn in self.buttons:
@@ -762,8 +918,32 @@ class AnalyzerGUI:
     def _mouse_cb(self, event, x, y, flags, param):
         if event == cv2.EVENT_MOUSEMOVE:
             self.ui.handle_mouse_move(x, y)
+            
+            # Handle Field Hover
+            self.hover_region = None
+            if not self.ui.menu_open: # 메뉴가 열려있지 않을 때만
+                for region in self.ui_regions:
+                    rx1, ry1, rx2, ry2 = region['rect']
+                    if rx1 <= x <= rx2 and ry1 <= y <= ry2:
+                        self.hover_region = region
+                        break
+                        
         elif event == cv2.EVENT_LBUTTONDOWN:
             print(f"[DEBUG] Mouse Click at ({x}, {y})")
+            
+            # Handle Field Click (Selection Toggle)
+            clicked_field = False
+            if not self.ui.menu_open:
+                for region in self.ui_regions:
+                    rx1, ry1, rx2, ry2 = region['rect']
+                    if rx1 <= x <= rx2 and ry1 <= y <= ry2:
+                        if self.selected_region and self.selected_region['name'] == region['name']:
+                            self.selected_region = None # Toggle Off
+                        else:
+                            self.selected_region = region # Select
+                        clicked_field = True
+                        break
+            
             # 1. Menu & Button Click (Delegated to UIManager)
             if self.ui.handle_click(x, y):
                 return
@@ -878,6 +1058,26 @@ class AnalyzerGUI:
                         for pid in prog['pids'].keys():
                             if cur_y - 20 <= y <= cur_y + 5:
                                 self.selected_pid = pid
+                                
+                                # Sync with Filter Buttons
+                                # 선택된 PID의 타입을 확인하여 Video/Audio 필터 자동 활성화
+                                pid_info = self.parser.pid_map.get(pid, {})
+                                pid_type = pid_info.get('type', 0)
+                                desc = pid_info.get('desc', '')
+                                
+                                # Video Types
+                                if pid_type in [0x01, 0x02, 0x1B, 0x24] or "Video" in desc:
+                                    self.active_filters['Video'] = True
+                                    self.active_filters['Audio'] = False
+                                # Audio Types
+                                elif pid_type in [0x03, 0x04, 0x0F, 0x81] or "Audio" in desc:
+                                    self.active_filters['Audio'] = True
+                                    self.active_filters['Video'] = False
+                                else:
+                                    # 그 외 타입이면 둘 다 끔
+                                    self.active_filters['Video'] = False
+                                    self.active_filters['Audio'] = False
+                                
                                 break
                             cur_y += 25
 
@@ -916,8 +1116,47 @@ class AnalyzerGUI:
         elif name.startswith('filter_'):
             f_name = name.replace('filter_', '')
             if f_name in self.active_filters:
-                self.active_filters[f_name] = not self.active_filters[f_name]
-                print(f"[Filter] {f_name} -> {self.active_filters[f_name]}")
+                # Toggle
+                new_state = not self.active_filters[f_name]
+                self.active_filters[f_name] = new_state
+                print(f"[Filter] {f_name} -> {new_state}")
+                
+                # Sync with PMT Selection (Video/Audio Only)
+                if f_name in ['Video', 'Audio']:
+                    if new_state:
+                        # 필터 켜짐: 해당 타입의 첫 번째 PID 자동 선택
+                        # 다른 필터는 끄는게 직관적일 수 있음 (Radio Button 처럼) -> 여기서는 OR 로직이므로 유지하되 선택만 변경
+                        
+                        # Find first matching PID in current program
+                        if self.selected_program and self.selected_program in self.parser.programs:
+                            prog = self.parser.programs[self.selected_program]
+                            for pid, info in prog['pids'].items():
+                                p_type = info.get('type', 0)
+                                desc = info.get('desc', '')
+                                is_match = False
+                                
+                                if f_name == 'Video' and (p_type in [0x01, 0x02, 0x1B, 0x24] or "Video" in desc): is_match = True
+                                if f_name == 'Audio' and (p_type in [0x03, 0x04, 0x0F, 0x81] or "Audio" in desc): is_match = True
+                                
+                                if is_match:
+                                    self.selected_pid = pid
+                                    # 상호 배제적 선택을 위해 다른 필터 끄기 (User UX에 따라 다름)
+                                    # 요청사항: "Video선택시 Audio해제" 등 명시는 없으나 보통 하나만 봄.
+                                    # 여기서는 켜진 필터에 맞는 PID로 포커스만 이동
+                                    break
+                    else:
+                        # 필터 꺼짐: 현재 선택된 PID가 해당 타입이면 선택 해제
+                        if self.selected_pid:
+                            pid_info = self.parser.pid_map.get(self.selected_pid, {})
+                            p_type = pid_info.get('type', 0)
+                            desc = pid_info.get('desc', '')
+                            
+                            is_match = False
+                            if f_name == 'Video' and (p_type in [0x01, 0x02, 0x1B, 0x24] or "Video" in desc): is_match = True
+                            if f_name == 'Audio' and (p_type in [0x03, 0x04, 0x0F, 0x81] or "Audio" in desc): is_match = True
+                            
+                            if is_match:
+                                self.selected_pid = None # 선택 해제
 
     def _handle_menu(self, action):
         if action == 'exit':

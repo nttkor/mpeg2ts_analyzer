@@ -47,6 +47,9 @@ class UIManager:
             })
             cur_x += width + 10
             
+        # 버튼 영역 끝 저장 (Status 텍스트 배치용)
+        self.last_btn_end_x = cur_x
+            
         # Filter Buttons (Video, Audio, PCR, PTS, DTS)
         # Start after Tool Status Text (~900px)
         filter_start_x = 950
@@ -154,7 +157,15 @@ class UIManager:
         elif self.gui.current_pkt_idx > 0:
             status_text = "PAUSED"
             status_color = (255, 255, 0)
-        cv2.putText(img, status_text, (700, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
+            
+        # Status Text 위치: 일반 버튼들과 필터 버튼들(950) 사이의 중앙
+        # 대략 (last_btn_end_x + 950) / 2
+        # 만약 last_btn_end_x가 정의되지 않았으면 기본값 700 사용
+        status_x = 700
+        if hasattr(self, 'last_btn_end_x'):
+            status_x = int((self.last_btn_end_x + 950) / 2) - 50 # 텍스트 길이 고려해서 살짝 왼쪽으로
+            
+        cv2.putText(img, status_text, (status_x, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
         
         if self.menu_open:
             self.draw_menu(img)
