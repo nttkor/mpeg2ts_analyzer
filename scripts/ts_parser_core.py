@@ -229,6 +229,11 @@ class TSParser:
         data = payload[1+pointer:]
         
         if len(data) < 12: return
+        
+        # PCR PID Parsing (13 bits)
+        pcr_pid = ((data[8] & 0x1F) << 8) | data[9]
+        prog_node['pcr_pid_val'] = pcr_pid  # Store PCR PID
+        
         prog_info_len = ((data[10] & 0x0F) << 8) | data[11]
         
         idx = 12 + prog_info_len

@@ -45,6 +45,15 @@ class AnalyzerGUI:
         self.show_report = False
         self.bscan_running = False
         
+        # Filter States (Video, Audio, PCR, PTS, DTS)
+        self.active_filters = {
+            'Video': False,
+            'Audio': False,
+            'PCR': False,
+            'PTS': False,
+            'DTS': False
+        }
+        
         # UI Manager 초기화
         self.ui = UIManager(self)
         if file_path:
@@ -175,7 +184,9 @@ class AnalyzerGUI:
         if self.selected_program and self.selected_program in self.parser.programs:
             prog = self.parser.programs[self.selected_program]
             
-            cv2.putText(img, f"[PMT] PID 0x{prog['pmt_pid']:X}", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+            # PMT PID & PCR PID Display
+            pcr_pid = prog.get('pcr_pid_val', 0x1FFF)
+            cv2.putText(img, f"PMT PID: 0x{prog['pmt_pid']:X} | PCR PID: 0x{pcr_pid:X}", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
             cur_y += 25
             
             for pid, info in prog['pids'].items():
@@ -188,7 +199,11 @@ class AnalyzerGUI:
                     cv2.rectangle(img, (x+5, cur_y-15), (x+w-5, cur_y+5), (60, 60, 80), -1)
                 
                 cnt = self.parser.pid_counts.get(pid, 0)
-                text = f"PID 0x{pid:X} : {info['desc']} ({cnt})"
+                
+                # PCR Tag
+                pcr_tag = " (PCR)" if pid == pcr_pid else ""
+                
+                text = f"PID 0x{pid:X} : {info['desc']}{pcr_tag} ({cnt})"
                 
                 thickness = 1
                 if x <= self.mouse_x <= x+w and cur_y-20 <= self.mouse_y <= cur_y+5:
@@ -366,10 +381,25 @@ class AnalyzerGUI:
                 # PTS / DTS
                 pts = pes_info.get('pts')
                 dts = pes_info.get('dts')
+                
+                pts_str = ""
                 if pts is not None:
-                    cv2.putText(img, f"PTS: {pts}", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 1)
+                    pts_sec = pts / 90000.0
+                    pts_str = f"PTS: {pts} ({pts_sec:.3f}s)"
+                    cv2.putText(img, pts_str, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 1)
+                
                 if dts is not None:
-                    cv2.putText(img, f"DTS: {dts}", (x+200, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 1)
+                    dts_sec = dts / 90000.0
+                    dts_str = f"DTS: {dts} ({dts_sec:.3f}s)"
+                    
+                    # PTS 텍스트 길이에 따라 DTS 위치 조정
+                    offset_x = 200
+                    if pts_str:
+                        (w_txt, _), _ = cv2.getTextSize(pts_str, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                        offset_x = 20 + w_txt + 30
+                        
+                    cv2.putText(img, dts_str, (x+offset_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 1)
+                
                 if pts or dts: cur_y += 25
             else:
                 cv2.putText(img, "[Error] Invalid PES Header", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
@@ -382,10 +412,13 @@ class AnalyzerGUI:
             found_start = True
             start_idx = self.current_pkt_idx
             
+            # Start일 때도 하단 간격 살짝 조정 (PES Continuation과 비슷하게)
+            # 기존 cur_y += 25를 삭제하거나 유지하되, Audio Sync를 위해 공간 확보
+            
         else:
             # PES Continuation
             cv2.putText(img, ">> PES Continuation <<", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 2)
-            cur_y += 25
+            cur_y += 30 # 한 줄 띄우기
             
             # Back-tracking to find PES Start
             found_start = False
@@ -466,10 +499,14 @@ class AnalyzerGUI:
                                         prog_info = f" | {pct:.1f}% ({processed_bytes:,}/{total_len:,})"
                                         seq_str = f"Seq: {current_seq} / ~{est_total_pkts}"
                                         
-                                    cv2.putText(img, seq_str + prog_info, (x+20, cur_y+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 100), 1)
+                                    # [이동 완료] PES Continuation 바로 아래에 표시
+                                    cv2.putText(img, seq_str + prog_info, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 100), 1)
+                                    cur_y += 25 # 줄바꿈 반영
                                 break
             except Exception as e:
                  print(f"[Error] Back-tracking failed: {e}")
+            
+            # cur_y += 10 (삭제: 위에서 줄바꿈 처리함)
             
             # PES Navigation Target 업데이트 (좌표는 위에서 계산됨)
         # 버튼이 눌렸을 때 동작하도록 targets 딕셔너리를 갱신해야 함
@@ -490,9 +527,8 @@ class AnalyzerGUI:
                 elif self.last_click_target == 'pes_next':
                      cv2.rectangle(img, btn_pes_next_rect[:2], btn_pes_next_rect[2:], (0, 0, 255), 2)
 
-        cur_y += 35
-        if found_start: cur_y += 10
-
+        # cur_y += 10 # (삭제) 버튼 공간 제거하여 위쪽 정보와 밀착
+        
         # Part of Multi-Packet PES 문구는 이제 위 링크로 대체되거나 아래에 보조로 표시
         # cv2.putText(img, "Part of Multi-Packet PES", ... ) # 생략 또는 유지
         
@@ -501,6 +537,7 @@ class AnalyzerGUI:
             for i in range(len(payload)-1):
                 # MP2/ADTS (FFF) Check
                 if payload[i] == 0xFF and (payload[i+1] & 0xF0) == 0xF0:
+                    # cur_y 좌표 그대로 사용 (위에서 간격 조정됨)
                     cv2.putText(img, f"[Audio Sync] Found at offset {i} (0xFFF...)", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
                     break
 
@@ -584,13 +621,14 @@ class AnalyzerGUI:
                     cur_y += 5
                     pcr_val = adapt_info['pcr']
                     pcr_sec = pcr_val / 27_000_000.0
-                    cv2.putText(img, f">> PCR Value: {pcr_val}", (col2_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-                    cur_y += line_h
-                    cv2.putText(img, f"   ({pcr_sec:.6f} sec)", (col2_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                    
+                    # PTS/DTS와 동일한 스타일로 한 줄 표시 (Label "PCR Value" -> "PCR" 단축)
+                    pcr_str = f">> PCR: {pcr_val} ({pcr_sec:.6f}s)"
+                    cv2.putText(img, pcr_str, (col2_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
                     cur_y += line_h
                     
                 if adapt_info['opcr'] is not None:
-                    cv2.putText(img, f"OPCR Value: {adapt_info['opcr']}", (col2_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+                    cv2.putText(img, f"OPCR: {adapt_info['opcr']}", (col2_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
                     cur_y += line_h
         else:
             cv2.putText(img, "[No Adaptation Field]", (col2_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
@@ -863,6 +901,13 @@ class AnalyzerGUI:
                 self.scanner.start()
         elif name == 'prev': self._step_packet(-1)
         elif name == 'next': self._step_packet(1)
+        
+        # Filter Toggle
+        elif name.startswith('filter_'):
+            f_name = name.replace('filter_', '')
+            if f_name in self.active_filters:
+                self.active_filters[f_name] = not self.active_filters[f_name]
+                print(f"[Filter] {f_name} -> {self.active_filters[f_name]}")
 
     def _handle_menu(self, action):
         if action == 'exit':
@@ -918,37 +963,87 @@ class AnalyzerGUI:
         self.playing = not self.playing
         if self.playing: self.speed = 1.0
 
-    def _step_packet(self, step):
-        self.playing = False
+    def check_packet_filter(self, packet):
+        """
+        현재 활성화된 필터 조건에 패킷이 부합하는지 확인 (OR 연산)
+        필터가 모두 꺼져 있으면 True 반환 (필터링 없음)
+        """
+        # Check if any filter is active
+        is_any_filter_active = any(self.active_filters.values())
+        if not is_any_filter_active:
+            return True
+            
+        # Parse packet for filtering
+        pid, pusi, adapt, _ = self.parser.parse_header(packet)
         
-        # PID 필터링 이동
-        if self.selected_pid is None:
-            self.current_pkt_idx = max(0, self.current_pkt_idx + step)
-        else:
-            # 선택된 PID 탐색 모드
-            target_pid = self.selected_pid
-            search_dir = 1 if step > 0 else -1
-            temp_idx = self.current_pkt_idx
-            found = False
-            max_search = 100000 # 최대 탐색 범위
+        # 1. Video / Audio Filter
+        if self.active_filters['Video'] or self.active_filters['Audio']:
+            pid_type = self.parser.pid_map.get(pid, {}).get('type', 0)
             
-            for _ in range(max_search):
-                temp_idx += search_dir
-                if temp_idx < 0: break
-                
-                data = self.parser.read_packet_at(temp_idx)
-                if not data: break # EOF
-                
-                pid, _, _, _ = self.parser.parse_header(data)
-                if pid == target_pid:
-                    self.current_pkt_idx = temp_idx
-                    found = True
-                    break
+            # Video Types: MPEG1(1), MPEG2(2), H.264(0x1B), HEVC(0x24)
+            if self.active_filters['Video'] and pid_type in [0x01, 0x02, 0x1B, 0x24]: return True
             
-            if not found:
-                print(f"PID 0x{target_pid:X} not found in direction {search_dir}")
+            # Audio Types: MPEG1(3), MPEG2(4), AAC(0x0F), AC3(0x81)
+            if self.active_filters['Audio'] and pid_type in [0x03, 0x04, 0x0F, 0x81]: return True
+            
+        # 2. PCR Filter
+        if self.active_filters['PCR']:
+            if adapt & 0x2: # Adapt Field Exists
+                if len(packet) > 5:
+                    flags = packet[5]
+                    pcr_flag = (flags >> 4) & 0x1
+                    if pcr_flag: return True
+                    
+        # 3. PTS / DTS Filter
+        if self.active_filters['PTS'] or self.active_filters['DTS']:
+            if pusi:
+                # Check PES Header
+                off = 4
+                if adapt & 0x2: off = 5 + packet[4]
+                
+                if off < 188:
+                    payload = packet[off:]
+                    if len(payload) >= 9:
+                        start_code = (payload[0]<<16) | (payload[1]<<8) | payload[2]
+                        if start_code == 1:
+                            flags_2 = payload[7]
+                            pts_dts_flag = (flags_2 >> 6) & 0x3
+                            
+                            if self.active_filters['PTS'] and (pts_dts_flag & 0x2): return True
+                            if self.active_filters['DTS'] and (pts_dts_flag & 0x1): return True
 
-        self.update_packet_view()
+        return False
+
+    def _step_packet(self, step):
+        """
+        패킷 이동 (탐색)
+        - 조건(PID 선택 or 필터 활성)이 있으면: 'Smart Search' 모드로 재생 (고속 탐색)
+        - 조건이 없으면: 단순 1칸 이동
+        """
+        # 1. 활성 조건 확인
+        is_filter_active = any(self.active_filters.values())
+        has_condition = (self.selected_pid is not None) or is_filter_active
+        
+        # 2. 조건이 없으면 단순 이동
+        if not has_condition:
+            self.playing = False
+            self.current_pkt_idx = max(0, self.current_pkt_idx + step)
+            self.update_packet_view()
+            return
+
+        # 3. 조건이 있으면 'Filter Search Mode'로 재생 시작
+        # (무한루프 방지 및 UI 반응성 확보를 위해 Play Loop 이용)
+        self.playing = True
+        self.speed = 50.0 if step > 0 else -50.0  # 탐색 속도 (x50)
+        
+        self.filter_search_mode = True  # 필터 탐색 모드 활성화
+        self.pes_search_mode = False    # PES 탐색 모드는 해제
+        
+        # 현재 위치에서는 이미 멈춰있을 수 있으므로, 일단 한 칸 이동 후 탐색 시작
+        self.current_pkt_idx += (1 if step > 0 else -1)
+        if self.current_pkt_idx < 0: self.current_pkt_idx = 0
+        
+        print(f"[Search] Searching with speed {self.speed}... (Filter: {is_filter_active}, PID: {self.selected_pid})")
 
     def _search_pes_start_backward(self):
         """현재 위치에서 뒤로 가며 PES Start(PUSI=1)를 찾음 (Deep Search)"""
@@ -1053,8 +1148,9 @@ class AnalyzerGUI:
     def _handle_playback(self):
         wait = 10
         if self.playing:
-            # === 1. 일반 재생 모드 ===
-            if not hasattr(self, 'pes_search_mode') or not self.pes_search_mode:
+            # === 1. 일반 재생 모드 (조건 없음) ===
+            if (not hasattr(self, 'pes_search_mode') or not self.pes_search_mode) and \
+               (not hasattr(self, 'filter_search_mode') or not self.filter_search_mode):
                 self.current_pkt_idx += int(self.speed)
                 if self.current_pkt_idx < 0: self.current_pkt_idx = 0
                 self.update_packet_view()
@@ -1062,7 +1158,7 @@ class AnalyzerGUI:
                 else: wait = 1
             
             # === 2. PES 탐색 모드 (정밀 검사) ===
-            else:
+            elif hasattr(self, 'pes_search_mode') and self.pes_search_mode:
                 # 고속 이동하되, 건너뛰지 않고 모든 패킷 검사
                 step = 1 if self.speed > 0 else -1
                 steps_to_check = abs(int(self.speed)) # 예: 50개씩 검사
@@ -1099,6 +1195,76 @@ class AnalyzerGUI:
 
                 self.update_packet_view()
                 wait = 1 # 빠른 갱신
+
+            # === 3. Filter/PID 탐색 모드 (Smart Search) ===
+            elif hasattr(self, 'filter_search_mode') and self.filter_search_mode:
+                step = 1 if self.speed > 0 else -1
+                steps_to_check = abs(int(self.speed))
+                
+                is_filter_active = any(self.active_filters.values())
+                found = False
+                
+                # 파일 I/O 최적화를 위해 한 번 Open
+                try:
+                    with open(self.parser.file_path, "rb") as f:
+                        for _ in range(steps_to_check):
+                            # 경계 체크
+                            if self.current_pkt_idx < 0:
+                                self.current_pkt_idx = 0
+                                found = True
+                                break
+                            
+                            # Read Packet directly
+                            f.seek(self.current_pkt_idx * 188)
+                            data = f.read(188)
+                            
+                            if len(data) != 188: # EOF
+                                self.playing = False
+                                self.filter_search_mode = False
+                                break
+                                
+                            # --- 조건 검사 ---
+                            match = True
+                            
+                            # 필터가 켜져 있으면: PID 선택 무시하고 필터 조건만 검사 (Global Search)
+                            if is_filter_active:
+                                if not self.check_packet_filter(data):
+                                    match = False
+                            # 필터가 꺼져 있으면: 선택된 PID만 검사
+                            elif self.selected_pid is not None:
+                                import struct
+                                h = struct.unpack('>I', data[:4])[0]
+                                pid = (h >> 8) & 0x1FFF
+                                if pid != self.selected_pid:
+                                    match = False
+                            
+                            if match:
+                                found = True
+                                # 필터 탐색으로 찾았는데 PID가 다르면, 선택 PID를 자동 변경
+                                if is_filter_active and self.selected_pid is not None:
+                                    import struct
+                                    h = struct.unpack('>I', data[:4])[0]
+                                    pid = (h >> 8) & 0x1FFF
+                                    if pid != self.selected_pid:
+                                        self.selected_pid = pid
+                                break
+                            
+                            # 다음 패킷으로
+                            self.current_pkt_idx += step
+                            
+                except Exception as e:
+                    print(f"[Error] Search IO failed: {e}")
+                    self.playing = False
+                    self.filter_search_mode = False
+                
+                if found:
+                    self.playing = False
+                    self.filter_search_mode = False
+                    self.speed = 1.0
+                    print(f"[Search] Found match at {self.current_pkt_idx}")
+                
+                self.update_packet_view()
+                wait = 1
 
         return cv2.waitKey(wait) & 0xFF
 

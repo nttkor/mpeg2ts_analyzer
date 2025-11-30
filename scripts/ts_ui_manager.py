@@ -45,6 +45,20 @@ class UIManager:
                 'rect': (cur_x, base_y, cur_x+width, base_y+h)
             })
             cur_x += width + 10
+            
+        # Filter Buttons (Video, Audio, PCR, PTS, DTS)
+        # Start after Tool Status Text (~900px)
+        filter_start_x = 950
+        filter_w = 60
+        filters = ['Video', 'Audio', 'PCR', 'PTS', 'DTS']
+        
+        for f_name in filters:
+            self.buttons.append({
+                'name': f'filter_{f_name}',
+                'label': f_name,
+                'rect': (filter_start_x, base_y, filter_start_x+filter_w, base_y+h)
+            })
+            filter_start_x += filter_w + 5
 
     def _load_recents(self):
         try:
@@ -97,8 +111,19 @@ class UIManager:
             border_color = (150, 150, 150)
             thickness = 1
             
+            # Filter Button Style
+            if btn['name'].startswith('filter_'):
+                f_name = btn['name'].replace('filter_', '')
+                is_active = self.gui.active_filters.get(f_name, False)
+                if is_active:
+                    color = (0, 150, 150) # Active Color (Cyan-ish)
+                    border_color = (0, 255, 255)
+                    thickness = 2
+            
             if btn == self.hover_btn:
-                if not (btn['name'] == 'bscan' and self.gui.scanner.running) and not (btn['name'] == 'play' and self.gui.playing):
+                if not (btn['name'] == 'bscan' and self.gui.scanner.running) and \
+                   not (btn['name'] == 'play' and self.gui.playing) and \
+                   not (btn['name'].startswith('filter_') and self.gui.active_filters.get(btn['name'].replace('filter_', ''), False)):
                      if not (self.clicked_btn_info and btn['name'] == self.clicked_btn_info['name'] and time.time() - self.clicked_btn_info['time'] < 0.15):
                         color = (90, 90, 110)
                 border_color = (0, 255, 255)
