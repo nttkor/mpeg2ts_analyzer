@@ -51,6 +51,7 @@ scripts/
 
 1. **PES / Audio Deep Analysis**
     - **Single/Multi Packet 구분**: PES 패킷이 단독인지 분할되었는지 판별.
+    - **Back-tracking**: Continuation 패킷에서 PES 시작점(Start)을 자동 역추적.
     - **Audio Sync Check**: 오디오 스트림 내의 Sync Word(`0xFFF`) 패턴 자동 검색.
     - **PTS/DTS**: 타임스탬프 파싱 및 초(s) 단위 표시.
 
@@ -73,3 +74,12 @@ python scripts/ts_analyzer_gui.py
 - **BScan**: 전체 파일 구조 분석.
 - **Tree View**: 프로그램 및 PID 선택 (마우스 클릭).
 - **PES View**: 선택된 PID의 상세 헤더 및 오디오 정보 확인.
+
+## 6. 향후 계획 (To-Do)
+- [x] **기본 파싱**: PAT, PMT, TS Header.
+- [x] **GUI 구현**: Tree, Detail, Hex, Controls.
+- [x] **BScan**: 백그라운드 스캔 및 리포트.
+- [x] **PES 분석 강화**: Single/Multi 구분, 역추적(Back-tracking), Audio Sync.
+- [x] **코드 리팩토링**: UI 로직 분리(`ts_ui_manager`), 데이터 모델링(`ts_models`).
+- [ ] **PCR 분석**: PCR(Program Clock Reference) Jitter 및 간격 분석 그래프 추가.
+- [ ] **오디오 헤더 정밀 파싱**: MP2/AAC 헤더(Bitrate, Sample Rate) 상세 디코딩.

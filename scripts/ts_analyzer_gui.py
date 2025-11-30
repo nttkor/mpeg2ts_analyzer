@@ -238,55 +238,17 @@ class AnalyzerGUI:
         if off < 188:
             payload = self.current_hex_data[off:]
 
+        # 초기화
+        self.pes_jump_target = None
+
         # PES 분석 및 출력
         if pusi:
-            # PES Start
-            cv2.putText(img, ">> PES Packet Start <<", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-            cur_y += 25
-            
+            # ... (기존 코드) ...
             pes_info = self.parser.parse_pes_header(payload)
             if pes_info:
-                # Stream ID
-                sid = pes_info['stream_id']
-                sid_desc = "Unknown"
-                if 0xC0 <= sid <= 0xDF: sid_desc = f"Audio {sid & 0x1F}"
-                elif 0xE0 <= sid <= 0xEF: sid_desc = f"Video {sid & 0x0F}"
-                elif sid == 0xBD: sid_desc = "Private 1 (AC3/DTS)"
-                
-                cv2.putText(img, f"Stream ID: 0x{sid:02X} ({sid_desc})", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                # ...
                 cur_y += 25
-                
-                # PES Length & Structure
-                plen = pes_info['pes_length']
-                len_str = f"{plen} bytes" if plen > 0 else "Unknown (0)"
-                
-                # 패킷 구조 판별
-                struct_str = "Multi-Packet (Start)"
-                est_pkts = ""
-                
-                if plen > 0:
-                    if (plen + 6) <= len(payload):
-                        struct_str = "Single Packet (Complete)"
-                    else:
-                        # 예상 패킷 수 (헤더 제외 184바이트 기준 대략 계산)
-                        count = (plen + 6) / 184.0
-                        est_pkts = f" (Needs ~{count:.1f} packets)"
-                
-                cv2.putText(img, f"PES Len: {len_str}{est_pkts}", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 1)
-                cur_y += 25
-                cv2.putText(img, f"Type: {struct_str}", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 150, 150), 1)
-                cur_y += 25
-                
-                # PTS / DTS
-                if pes_info['pts'] is not None:
-                    pts_val = pes_info['pts'] / 90000.0
-                    dts_str = ""
-                    if pes_info['dts'] is not None:
-                        dts_val = pes_info['dts'] / 90000.0
-                        dts_str = f"  DTS: {dts_val:.3f}s"
-                    
-                    cv2.putText(img, f"PTS: {pts_val:.3f}s{dts_str}", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
-                    cur_y += 25
+                # PES Start 패킷은 자기 자신이 Start이므로 점프 불필요
             else:
                  cv2.putText(img, "Invalid or Non-PES Header", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 255), 1)
 
@@ -294,8 +256,77 @@ class AnalyzerGUI:
             # PES Continuation
             cv2.putText(img, ">> PES Continuation <<", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 2)
             cur_y += 25
-            cv2.putText(img, "Part of Multi-Packet PES", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+            
+            # Back-tracking to find PES Start
+            found_start = False
+            start_idx = -1
+            acc_payload = 0 
+            
+            curr_p_len = len(payload)
+            search_limit = 5000 # 검색 범위 확대 (Video는 큼)
+            dist = 0
+            
+            for k in range(1, search_limit):
+                t_idx = self.current_pkt_idx - k
+                if t_idx < 0: break
+                
+                t_data = self.parser.read_packet_at(t_idx)
+                if not t_data: break
+                
+                t_pid, t_pusi, t_adapt, _ = self.parser.parse_header(t_data)
+                
+                if t_pid == self.selected_pid:
+                    dist += 1
+                    t_off = 4
+                    if t_adapt & 0x2: t_off = 5 + t_data[4]
+                    if t_off < 188:
+                        acc_payload += (188 - t_off)
+                    
+                    if t_pusi:
+                        found_start = True
+                        start_idx = t_idx
+                        
+                        # PES Total Length 파싱
+                        t_payload = t_data[t_off:]
+                        pes_info = self.parser.parse_pes_header(t_payload)
+                        total_len = pes_info['pes_length'] if pes_info else 0
+                        
+                        current_seq = dist + 1
+                        processed_bytes = acc_payload + curr_p_len
+                        
+                        prog_info = ""
+                        if total_len > 0:
+                            pct = (processed_bytes / total_len) * 100
+                            est_total_pkts = int((total_len + 6) / 184.0) + 1
+                            prog_info = f" | {pct:.1f}% ({processed_bytes}/{total_len})"
+                            seq_str = f"Seq: {current_seq} / ~{est_total_pkts}"
+                        else:
+                            seq_str = f"Seq: {current_seq} (Total Len Unknown)"
+                            prog_info = f" | Acc: {processed_bytes} bytes"
+                            
+                        # Sequence 정보는 찾았을 때만 표시
+                        cv2.putText(img, seq_str + prog_info, (x+20, cur_y+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 100), 1)
+                        break
+            
+            # 점프 링크 표시 (찾았든 못 찾았든 표시)
+            link_color = (255, 255, 0) # Yellow
+            
+            if found_start:
+                text = f"<< Parent PES Start: Packet #{start_idx} (Jump) >>"
+                target_idx = start_idx
+            else:
+                text = "<< PES Continuation (Click to Find Start) >>"
+                target_idx = -2 # -2 indicates "Force Search"
+                
+            cv2.putText(img, text, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, link_color, 1)
+            self.pes_jump_target = {'rect': (x+20, cur_y-15, x+400, cur_y+5), 'idx': target_idx}
             cur_y += 25
+            
+            if found_start:
+                cur_y += 25 # Seq 정보 한 줄 더 띄우기
+
+            # Part of Multi-Packet PES 문구는 이제 위 링크로 대체되거나 아래에 보조로 표시
+            # cv2.putText(img, "Part of Multi-Packet PES", ... ) # 생략 또는 유지
             
             # Simple Audio Sync Check
             if len(payload) > 2:
@@ -464,7 +495,23 @@ class AnalyzerGUI:
             if self.ui.handle_click(x, y):
                 return
 
-            # 2. Tree View Selection
+            # 2. PES Jump Link Click
+            if hasattr(self, 'pes_jump_target') and self.pes_jump_target:
+                jx1, jy1, jx2, jy2 = self.pes_jump_target['rect']
+                if jx1<=x<=jx2 and jy1<=y<=jy2:
+                    target = self.pes_jump_target['idx']
+                    if target >= 0:
+                        self.current_pkt_idx = target
+                    elif target == -2:
+                        # Force Search
+                        found = self._search_pes_start_backward()
+                        if found >= 0: self.current_pkt_idx = found
+                        else: print("PES Start not found even with deep search.")
+                        
+                    self.update_packet_view()
+                    return
+
+            # 3. Tree View Selection
             # PAT 영역 (y: 60~480)
             if 0 <= x <= 400 and 60 <= y <= 480:
                 cur_y = 60 + 50
@@ -601,9 +648,38 @@ class AnalyzerGUI:
 
         self.update_packet_view()
 
+    def _search_pes_start_backward(self):
+        """현재 위치에서 뒤로 가며 PES Start(PUSI=1)를 찾음 (Deep Search)"""
+        if not self.selected_pid: return -1
+        
+        # 최대 500,000 패킷 (약 90MB) 검색
+        max_search = 500000
+        curr = self.current_pkt_idx
+        
+        for k in range(1, max_search):
+            idx = curr - k
+            if idx < 0: break
+            
+            data = self.parser.read_packet_at(idx)
+            if not data: break
+            
+            pid, pusi, _, _ = self.parser.parse_header(data)
+            if pid == self.selected_pid and pusi:
+                return idx
+                
+        return -1
+
     def update_packet_view(self):
         data = self.parser.read_packet_at(self.current_pkt_idx)
-        if data: self.current_hex_data = data
+        if data: 
+            self.current_hex_data = data
+        else:
+            # EOF or Error: Revert to last valid index if possible
+            if self.current_pkt_idx > 0:
+                self.current_pkt_idx -= 1
+                # Retry once
+                data = self.parser.read_packet_at(self.current_pkt_idx)
+                if data: self.current_hex_data = data
 
     def _handle_playback(self):
         wait = 10 # 기본 대기 시간 단축 (반응성 향상)
