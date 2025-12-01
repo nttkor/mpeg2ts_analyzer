@@ -7,6 +7,7 @@ import struct
 import os
 import threading
 import time
+import zlib
 
 # Stream Type 정의 (ISO/IEC 13818-1)
 STREAM_TYPES = {
@@ -30,6 +31,20 @@ class TSParser:
         self.last_log = "Ready."
         
         self._thread = None
+        
+        # Precompute CRC32 Table for MPEG-2 (Poly: 0x04C11DB7)
+        self._crc32_table = []
+        poly = 0x04C11DB7
+        for i in range(256):
+            crc = i << 24
+            for _ in range(8):
+                if (crc & 0x80000000):
+                    crc = (crc << 1) ^ poly
+                else:
+                    crc = (crc << 1)
+                crc &= 0xFFFFFFFF
+            self._crc32_table.append(crc)
+
 
     def start_background_parsing(self):
         """백그라운드 파싱 스레드 시작"""
@@ -77,6 +92,15 @@ class TSParser:
                 data = f.read(188)
                 return data if len(data) == 188 else None
         except: return None
+
+    def calculate_crc32(self, data):
+        """MPEG2-TS CRC32 Calculation (Using Table)"""
+        crc = 0xFFFFFFFF
+        for byte in data:
+            idx = ((crc >> 24) ^ byte) & 0xFF
+            crc = ((crc << 8) ^ self._crc32_table[idx]) & 0xFFFFFFFF
+        return crc
+
 
     def parse_header(self, packet):
         """TS 패킷 헤더 파싱 (PID, PUSI, Adapt, ContinuityCounter)"""
@@ -195,40 +219,110 @@ class TSParser:
     def _parse_pat(self, packet, adapt):
         off = 4
         if adapt & 0x2: off = 5 + packet[4]
-        if off >= 188: return
+        if off >= 188: return None
         
         payload = packet[off:]
-        if len(payload) < 1: return
+        if len(payload) < 1: return None
         pointer = payload[0]
-        if len(payload) < 1 + pointer: return
+        if len(payload) < 1 + pointer: return None
         data = payload[1+pointer:]
         
-        if len(data) < 8: return
+        # Section Header (3 bytes) + Table ID Ext (2) + Ver/Num (1) + SecNum (1) + LastSecNum (1) = 8 bytes
+        if len(data) < 8: return None
         
+        table_id = data[0]
+        section_length = ((data[1] & 0x0F) << 8) | data[2]
+        
+        # [DEBUG] PAT Header Info
+        # print(f"[PAT DEBUG] Len: {section_length}, Raw: {data[:16].hex()}...")
+
+        # 1.3b PAT Table ID Check (Should be 0x00)
+        is_valid_tid = (table_id == 0x00)
+        
+        # 2.2 CRC Check
+        total_len = 3 + section_length
+        
+        is_crc_valid = None
+        calc_crc_val = None
+        expected_crc_val = None
+        
+        if len(data) >= total_len:
+            section_bytes = data[:total_len]
+            if self.calculate_crc32(section_bytes) == 0:
+                is_crc_valid = True
+            else:
+                is_crc_valid = False
+            calc_crc_val = self.calculate_crc32(section_bytes[:-4])
+            expected_crc_val = struct.unpack('>I', section_bytes[-4:])[0]
+        else:
+            is_crc_valid = None
+        
+        # Parsing Programs
         section_data = data[8:]
+        
         i = 0
-        while i < len(section_data) - 4:
+        prog_data_len = section_length - 5 - 4
+        limit = min(len(section_data), prog_data_len)
+        
+        while i + 4 <= limit:
             prog_num = (section_data[i] << 8) | section_data[i+1]
             pmt_pid = ((section_data[i+2] & 0x1F) << 8) | section_data[i+3]
             
-            if prog_num != 0:
-                if prog_num not in self.programs:
-                    self.programs[prog_num] = {'pmt_pid': pmt_pid, 'pids': {}}
-                    self.last_log = f"Found Program {prog_num}"
+            # [수정] Program 0 (NIT) 포함 모든 프로그램 수집
+            if prog_num not in self.programs:
+                self.programs[prog_num] = {'pmt_pid': pmt_pid, 'pids': {}}
+                self.last_log = f"Found Program {prog_num}"
+            else:
+                if self.programs[prog_num]['pmt_pid'] != pmt_pid:
+                        self.programs[prog_num]['pmt_pid'] = pmt_pid
+                        self.programs[prog_num]['pids'] = {} 
+            
             i += 4
+            
+        return {
+            'valid_tid': is_valid_tid, 
+            'valid_crc': is_crc_valid,
+            'calc_crc': calc_crc_val,
+            'expected_crc': expected_crc_val
+        }
 
     def _parse_pmt(self, packet, adapt, prog_node):
         off = 4
         if adapt & 0x2: off = 5 + packet[4]
-        if off >= 188: return
+        if off >= 188: return None
         
         payload = packet[off:]
-        if len(payload) < 1: return
+        if len(payload) < 1: return None
         pointer = payload[0]
-        if len(payload) < 1 + pointer: return
+        if len(payload) < 1 + pointer: return None
         data = payload[1+pointer:]
         
-        if len(data) < 12: return
+        if len(data) < 12: return None
+        
+        table_id = data[0]
+        section_length = ((data[1] & 0x0F) << 8) | data[2]
+        
+        # 1.5b PMT Table ID Check (Should be 0x02)
+        is_valid_tid = (table_id == 0x02)
+        
+        # 2.2 CRC Check
+        total_len = 3 + section_length
+        
+        is_crc_valid = None
+        calc_crc_val = None
+        expected_crc_val = None
+        
+        if len(data) >= total_len:
+            section_bytes = data[:total_len]
+            if self.calculate_crc32(section_bytes) == 0:
+                is_crc_valid = True
+            else:
+                is_crc_valid = False
+            
+            calc_crc_val = self.calculate_crc32(section_bytes[:-4])
+            expected_crc_val = struct.unpack('>I', section_bytes[-4:])[0]
+        else:
+            is_crc_valid = None
         
         # PCR PID Parsing (13 bits)
         pcr_pid = ((data[8] & 0x1F) << 8) | data[9]
@@ -239,9 +333,18 @@ class TSParser:
         idx = 12 + prog_info_len
         comp_data = data[idx:]
         
+        # Loop limit: section_length - 9 (fixed header) - 4 (CRC) - prog_info_len
+        # Simplified: just ensure buffer safety
+        limit = total_len - 4 # Exclude CRC
+        
         i = 0
+        # Re-calculate index relative to comp_data start
+        # comp_data starts at 12 + prog_info_len
+        # absolute limit is total_len. 
+        # relative limit for while loop:
+        
         while i < len(comp_data) - 4:
-            if i + 5 > len(comp_data): break
+            if 12 + prog_info_len + i + 5 > limit: break
             
             stype = comp_data[i]
             epid = ((comp_data[i+1] & 0x1F) << 8) | comp_data[i+2]
@@ -254,6 +357,13 @@ class TSParser:
                 self.pid_map[epid] = {'type': stype, 'desc': desc}
             
             i += 5 + es_len
+            
+        return {
+            'valid_tid': is_valid_tid, 
+            'valid_crc': is_crc_valid,
+            'calc_crc': calc_crc_val,
+            'expected_crc': expected_crc_val
+        }
 
     def parse_pes_header(self, payload):
         """

@@ -55,8 +55,10 @@ class AnalyzerGUI:
         self.hover_region = None    # 현재 마우스 오버된 영역
         self.selected_region = None # 클릭으로 고정된 영역
         
-        # Filter States (Video, Audio, PCR, PTS, DTS)
+        # Filter States (PAT, PMT, Video, Audio, PCR, PTS, DTS)
         self.active_filters = {
+            'PAT': False,
+            'PMT': False,
             'Video': False,
             'Audio': False,
             'PCR': False,
@@ -82,16 +84,25 @@ class AnalyzerGUI:
         
         self.parser.quick_scan(limit=20000)
         
-        # Auto Select First Program & PMT
+        # Auto Select First Valid Program (Skip Prog 0/NIT) & PMT
         if self.parser.programs:
-            first_prog_id = list(self.parser.programs.keys())[0]
-            self.selected_program = first_prog_id
-            
-            prog_info = self.parser.programs[first_prog_id]
-            if prog_info['pids']:
-                # Select first ES PID
-                first_pid = list(prog_info['pids'].keys())[0]
-                self.selected_pid = first_pid
+            # 0번이 아닌 프로그램 중 가장 먼저 나오는 것 선택
+            valid_progs = [p for p in self.parser.programs.keys() if p != 0]
+            if valid_progs:
+                first_prog_id = sorted(valid_progs)[0]
+                self.selected_program = first_prog_id
+                
+                prog_info = self.parser.programs[first_prog_id]
+                # PMT PID 자동 선택
+                self.selected_pid = prog_info['pmt_pid']
+                
+                # PMT 필터 활성화
+                self.active_filters['PMT'] = True
+                print(f"[Auto] Initial Selection: Program {first_prog_id} (PMT PID: 0x{self.selected_pid:X})")
+            elif 0 in self.parser.programs:
+                # 0번밖에 없으면 어쩔 수 없이 0번 선택
+                self.selected_program = 0
+                self.selected_pid = self.parser.programs[0]['pmt_pid']
         
         self.current_pkt_idx = 0
         self.playing = False
@@ -169,22 +180,44 @@ class AnalyzerGUI:
     def _draw_pat_view(self, img, x, y, w, h):
         cv2.rectangle(img, (x, y), (x+w, y+h), (40, 40, 40), -1)
         cv2.rectangle(img, (x, y), (x+w, y+h), (100, 100, 100), 1)
-        cv2.putText(img, "PAT (Programs)", (x+10, y+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+        
+        prog_count = len(self.parser.programs)
+        
+        # [UI 개선] 타이틀 영역 하이라이트 (클릭 가능 피드백)
+        title_rect_h = 30
+        if 0 <= self.mouse_x - x <= w and 0 <= self.mouse_y - y <= title_rect_h:
+            cv2.rectangle(img, (x, y), (x+w, y+title_rect_h), (60, 60, 60), -1)
+            
+        cv2.putText(img, f"PAT (Programs: {prog_count})", (x+10, y+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
         
         cur_y = y + 50
         for prog_num, prog in self.parser.programs.items():
             color = (200, 200, 200)
-            if self.selected_program == prog_num:
-                color = (0, 255, 255) # Cyan (Selected)
-                cv2.rectangle(img, (x+5, cur_y-15), (x+w-5, cur_y+5), (60, 60, 80), -1)
-            
             text = f"Program {prog_num} (PMT PID: 0x{prog['pmt_pid']:X})"
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
             
-            thickness = 1
-            if x <= self.mouse_x <= x+w and cur_y-20 <= self.mouse_y <= cur_y+5:
-                thickness = 2
-                
+            # 텍스트 영역 정밀 계산
+            # 기존: 전체 너비 체크 -> 변경: 텍스트 너비 + 여유공간 체크
+            rect_x1, rect_y1 = x + 20, cur_y - th - 5
+            rect_x2, rect_y2 = x + 20 + tw, cur_y + 5
+            
+            is_hover = (rect_x1 <= self.mouse_x <= rect_x2 and rect_y1 <= self.mouse_y <= rect_y2)
+            is_selected = (self.selected_program == prog_num)
+            
+            if is_selected:
+                color = (0, 255, 255) # Cyan
+                cv2.rectangle(img, (rect_x1-5, rect_y1), (rect_x2+5, rect_y2), (60, 60, 80), -1)
+            elif is_hover:
+                color = (255, 255, 200) # Bright
+                cv2.rectangle(img, (rect_x1-5, rect_y1), (rect_x2+5, rect_y2), (80, 80, 100), -1)
+            
+            thickness = 2 if is_hover or is_selected else 1
             cv2.putText(img, text, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, thickness)
+            
+            # Register Region for Click Handling (if needed globally)
+            # 여기서는 로컬 렌더링 루프에서 처리하지만, 전역 클릭 처리를 위해 등록할 수도 있음
+            # 하지만 _mouse_cb에서 좌표 기반으로 처리하므로 시각적 피드백만 주면 됨.
+            
             cur_y += 25
 
     def _draw_pmt_view(self, img, x, y, w, h):
@@ -209,21 +242,25 @@ class AnalyzerGUI:
                 if "Video" in info['desc']: color = (0, 255, 255)
                 elif "Audio" in info['desc']: color = (0, 255, 0)
                 
-                if self.selected_pid == pid:
-                    color = (255, 100, 100) # Red (Selected)
-                    cv2.rectangle(img, (x+5, cur_y-15), (x+w-5, cur_y+5), (60, 60, 80), -1)
-                
+                text = f"PID 0x{pid:X} : {info['desc']}"
+                if pid == pcr_pid: text += " (PCR)"
                 cnt = self.parser.pid_counts.get(pid, 0)
+                text += f" ({cnt})"
                 
-                # PCR Tag
-                pcr_tag = " (PCR)" if pid == pcr_pid else ""
+                (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+                rect_x1, rect_y1 = x + 20, cur_y - th - 5
+                rect_x2, rect_y2 = x + 20 + tw, cur_y + 5
                 
-                text = f"PID 0x{pid:X} : {info['desc']}{pcr_tag} ({cnt})"
+                is_hover = (rect_x1 <= self.mouse_x <= rect_x2 and rect_y1 <= self.mouse_y <= rect_y2)
+                is_selected = (self.selected_pid == pid)
                 
-                thickness = 1
-                if x <= self.mouse_x <= x+w and cur_y-20 <= self.mouse_y <= cur_y+5:
-                    thickness = 2
-
+                if is_selected:
+                    color = (255, 100, 100) # Red
+                    cv2.rectangle(img, (rect_x1-5, rect_y1), (rect_x2+5, rect_y2), (60, 60, 80), -1)
+                elif is_hover:
+                    cv2.rectangle(img, (rect_x1-5, rect_y1), (rect_x2+5, rect_y2), (80, 80, 100), -1)
+                
+                thickness = 2 if is_hover or is_selected else 1
                 cv2.putText(img, text, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, thickness)
                 cur_y += 25
         else:
@@ -235,7 +272,7 @@ class AnalyzerGUI:
         cv2.putText(img, "PES / Section Analysis", (x+10, y+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
         
         cur_y = y + 50
-        if not self.selected_pid:
+        if self.selected_pid is None:
             cv2.putText(img, "Select a PID to analyze.", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
             return
 
@@ -244,8 +281,25 @@ class AnalyzerGUI:
         pid_text = f"Selected PID: 0x{self.selected_pid:X} ({info.get('desc', 'Unknown')})"
         cv2.putText(img, pid_text, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
         
+        # Helper for adding region (Defined early for reuse)
+        def add_region(name, start_offset, length, text_rect):
+            if not hasattr(self, 'ui_regions'): return
+            
+            # Check Hover/Select for highlight drawing (Feedback)
+            is_active = (self.selected_region and self.selected_region['name'] == name) or \
+                        (self.hover_region and self.hover_region['name'] == name)
+            
+            if is_active:
+                cv2.rectangle(img, text_rect[:2], text_rect[2:], (100, 100, 0), -1)
+
+            self.ui_regions.append({
+                'name': name,
+                'rect': text_rect,
+                'range': (start_offset, start_offset + length),
+                'color': (0, 255, 255)
+            })
+
         # PES Navigation Buttons (Selected PID 옆으로 이동)
-        # Layout: << (Prev Start)  < (Prev Pkt)  > (Next Pkt)  >> (Next Start)
         (text_w, text_h), _ = cv2.getTextSize(pid_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
         btn_start_x = x + 20 + text_w + 30 
         
@@ -254,86 +308,43 @@ class AnalyzerGUI:
         
         # 1. Prev PES Start (<<)
         btn_pes_prev_rect = (btn_start_x, cur_y - 15, btn_start_x + btn_w, cur_y + 10)
-        
         # 2. Prev Packet (<)
         bx = btn_start_x + btn_w + gap
         btn_pkt_prev_rect = (bx, cur_y - 15, bx + btn_w, cur_y + 10)
-        
         # 3. Next Packet (>)
         bx += btn_w + gap
         btn_pkt_next_rect = (bx, cur_y - 15, bx + btn_w, cur_y + 10)
-
         # 4. Next PES Start (>>)
         bx += btn_w + gap
         btn_pes_next_rect = (bx, cur_y - 15, bx + btn_w, cur_y + 10)
         
         # --- Draw Buttons ---
-        
-        # 1. <<
-        color = (255, 200, 0)
-        r = btn_pes_prev_rect
-        if r[0] <= self.mouse_x <= r[2] and r[1] <= self.mouse_y <= r[3]:
-            color = (0, 255, 255)
-            cv2.rectangle(img, (r[0]-3, r[1]-3), (r[2]+3, r[3]+3), (60, 60, 80), -1)
-        
-        # Draw two triangles for <<
-        mid_y = (r[1] + r[3]) // 2
-        # Left triangle
-        pt1 = (r[0] + 15, r[1] + 5)
-        pt2 = (r[0] + 15, r[3] - 5)
-        pt3 = (r[0] + 2, mid_y)
-        cv2.drawContours(img, [np.array([pt1, pt2, pt3])], 0, color, -1)
-        # Right triangle (offset)
-        pt1_b = (r[0] + 25, r[1] + 5)
-        pt2_b = (r[0] + 25, r[3] - 5)
-        pt3_b = (r[0] + 12, mid_y)
-        cv2.drawContours(img, [np.array([pt1_b, pt2_b, pt3_b])], 0, color, -1)
-
-        # 2. <
-        color = (255, 200, 0)
-        r = btn_pkt_prev_rect
-        if r[0] <= self.mouse_x <= r[2] and r[1] <= self.mouse_y <= r[3]:
-            color = (0, 255, 255)
-            cv2.rectangle(img, (r[0]-3, r[1]-3), (r[2]+3, r[3]+3), (60, 60, 80), -1)
-        
-        pt1 = (r[2] - 5, r[1] + 5)
-        pt2 = (r[2] - 5, r[3] - 5)
-        pt3 = (r[0] + 5, mid_y)
-        cv2.drawContours(img, [np.array([pt1, pt2, pt3])], 0, color, -1)
-
-        # 3. >
-        color = (255, 200, 0)
-        r = btn_pkt_next_rect
-        if r[0] <= self.mouse_x <= r[2] and r[1] <= self.mouse_y <= r[3]:
-            color = (0, 255, 255)
-            cv2.rectangle(img, (r[0]-3, r[1]-3), (r[2]+3, r[3]+3), (60, 60, 80), -1)
-        
-        pt1 = (r[0] + 5, r[1] + 5)
-        pt2 = (r[0] + 5, r[3] - 5)
-        pt3 = (r[2] - 5, mid_y)
-        cv2.drawContours(img, [np.array([pt1, pt2, pt3])], 0, color, -1)
-
-        # 4. >>
-        color = (255, 200, 0)
-        r = btn_pes_next_rect
-        if r[0] <= self.mouse_x <= r[2] and r[1] <= self.mouse_y <= r[3]:
-            color = (0, 255, 255)
-            cv2.rectangle(img, (r[0]-3, r[1]-3), (r[2]+3, r[3]+3), (60, 60, 80), -1)
+        for rect, label in [(btn_pes_prev_rect, '<<'), (btn_pkt_prev_rect, '<'), (btn_pkt_next_rect, '>'), (btn_pes_next_rect, '>>')]:
+            color = (255, 200, 0)
+            if rect[0] <= self.mouse_x <= rect[2] and rect[1] <= self.mouse_y <= rect[3]:
+                color = (0, 255, 255)
+                cv2.rectangle(img, (rect[0]-3, rect[1]-3), (rect[2]+3, rect[3]+3), (60, 60, 80), -1)
             
-        # Left triangle
-        pt1 = (r[0] + 5, r[1] + 5)
-        pt2 = (r[0] + 5, r[3] - 5)
-        pt3 = (r[0] + 18, mid_y)
-        cv2.drawContours(img, [np.array([pt1, pt2, pt3])], 0, color, -1)
-        # Right triangle
-        pt1_b = (r[0] + 15, r[1] + 5)
-        pt2_b = (r[0] + 15, r[3] - 5)
-        pt3_b = (r[0] + 28, mid_y)
-        cv2.drawContours(img, [np.array([pt1_b, pt2_b, pt3_b])], 0, color, -1)
+            # Simple shape drawing for buttons
+            mid_y = (rect[1] + rect[3]) // 2
+            
+            if label == '<<':
+                pts = [((rect[0]+15, rect[1]+5), (rect[0]+15, rect[3]-5), (rect[0]+2, mid_y)),
+                       ((rect[0]+25, rect[1]+5), (rect[0]+25, rect[3]-5), (rect[0]+12, mid_y))]
+            elif label == '<':
+                pts = [((rect[2]-5, rect[1]+5), (rect[2]-5, rect[3]-5), (rect[0]+5, mid_y))]
+            elif label == '>':
+                pts = [((rect[0]+5, rect[1]+5), (rect[0]+5, rect[3]-5), (rect[2]-5, mid_y))]
+            elif label == '>>':
+                pts = [((rect[0]+5, rect[1]+5), (rect[0]+5, rect[3]-5), (rect[0]+18, mid_y)),
+                       ((rect[0]+15, rect[1]+5), (rect[0]+15, rect[3]-5), (rect[0]+28, mid_y))]
+            
+            for p in pts:
+                cv2.drawContours(img, [np.array(p)], 0, color, -1)
 
         cur_y += 30
         
-        # PES Navigation Target 초기 등록 (기본값)
+        # PES Navigation Target 초기 등록
         self.pes_nav_targets = {
             'pes_prev': {'rect': btn_pes_prev_rect, 'idx': -2},
             'pkt_prev': {'rect': btn_pkt_prev_rect},
@@ -341,7 +352,6 @@ class AnalyzerGUI:
             'pes_next': {'rect': btn_pes_next_rect}
         }
         
-        # 현재 패킷 데이터 확인
         if not self.current_hex_data: return
         
         # 헤더 파싱 및 TS 정보 요약
@@ -354,7 +364,6 @@ class AnalyzerGUI:
             cv2.putText(img, "Current packet does not match selected PID.", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 150), 1)
             return
             
-        # TS Header Summary (허전함 보완)
         ts_info = f"[TS Header] PUSI: {pusi} | CC: {cnt:02d} | Scram: {scram} | Adapt: {adapt}"
         cv2.putText(img, ts_info, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
         cur_y += 30
@@ -367,60 +376,57 @@ class AnalyzerGUI:
         if off < 188:
             payload = self.current_hex_data[off:]
 
-        # 초기화
-        self.pes_jump_target = None
-
+        # Check for PSI/SI Table PID
+        is_psi_pid = False
+        if pid == 0 or pid == 1 or pid == 2: # PAT, CAT, TSDT
+            is_psi_pid = True
+        else:
+            # [수정] selected_program과 무관하게, 알려진 모든 PMT PID를 확인
+            for prog in self.parser.programs.values():
+                if pid == prog['pmt_pid']:
+                    is_psi_pid = True
+                    break
+        
         # PES 분석 및 출력
-        if pusi:
+        if pusi and not is_psi_pid:
             # === Case 1: PES Packet Start ===
             pes_title = ">> PES Packet Start <<"
             (tw, th), _ = cv2.getTextSize(pes_title, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
             
-            # Interactive Region: PES Header
-            region_key = 'PES Header'
-            is_active = (self.selected_region and self.selected_region['name'] == region_key) or \
-                        (self.hover_region and self.hover_region['name'] == region_key)
-                        
-            if is_active:
-                cv2.rectangle(img, (x+20-5, cur_y-th-5), (x+20+tw+5, cur_y+5), (50, 100, 100), -1) # Yellow-ish bg
-                
-            cv2.putText(img, pes_title, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-            
-            # Register Region (Range 계산)
+            # Interactive Region: PES Header (General)
             # PES Header Range: off ~ off + (header length)
-            # PES Packet structure: Prefix(3)+StreamID(1)+Length(2) = 6 bytes
-            # If StreamID != ... : + Optional Header
-            if len(payload) >= 9: # Min required
-                # PES Header Length (Optional Header Length at index 8)
-                # payload[8] = PES_header_data_length
-                # Total PES Header size from payload start = 6 + 3 + payload[8]
-                # (Prefix~Length) + (Flags~HeaderLen) + (HeaderData)
-                pes_hdr_len = 6 + 3 + payload[8]
+            if len(payload) >= 6:
+                pes_hdr_len = 6 # Min
+                if len(payload) >= 9:
+                    pes_hdr_len += 3 + payload[8]
                 if pes_hdr_len > len(payload): pes_hdr_len = len(payload)
                 
-                self.ui_regions.append({
-                    'name': region_key,
-                    'rect': (x+20-5, cur_y-th-5, x+20+tw+5, cur_y+5),
-                    'range': (off, off + pes_hdr_len),
-                    'color': (0, 255, 255) # Yellow
-                })
+                # 전체 헤더 영역
+                add_region('PES Header', off, pes_hdr_len, (x+20-5, cur_y-th-5, x+20+tw+5, cur_y+5))
             
+            cv2.putText(img, pes_title, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
             cur_y += 30
             
             pes_info = self.parser.parse_pes_header(payload)
             if pes_info:
-                # Stream ID
+                # Stream ID (Offset: off + 3, Len: 1)
                 sid = pes_info['stream_id']
                 sid_str = f"Stream ID: 0x{sid:02X}"
                 if 0xC0 <= sid <= 0xDF: sid_str += " (Audio)"
                 elif 0xE0 <= sid <= 0xEF: sid_str += " (Video)"
                 elif sid == 0xBD: sid_str += " (Private)"
+                
+                (tw, th), _ = cv2.getTextSize(sid_str, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                add_region(f"Stream ID (0x{sid:02X})", off+3, 1, (x+20, cur_y-th-5, x+20+tw, cur_y+5))
                 cv2.putText(img, sid_str, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                 
-                # PES Packet Length
+                # PES Packet Length (Offset: off + 4, Len: 2)
                 p_len = pes_info['pes_length']
                 len_str = f"Length: {p_len} bytes"
                 if p_len == 0: len_str += " (Unbounded/Video)"
+                
+                (tw, th), _ = cv2.getTextSize(len_str, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                add_region(f"PES Length ({p_len})", off+4, 2, (x+250, cur_y-th-5, x+250+tw, cur_y+5))
                 cv2.putText(img, len_str, (x+250, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                 cur_y += 25
                 
@@ -428,22 +434,31 @@ class AnalyzerGUI:
                 pts = pes_info.get('pts')
                 dts = pes_info.get('dts')
                 
+                curr_field_off = off + 9
+                
                 pts_str = ""
                 if pts is not None:
                     pts_sec = pts / 90000.0
                     pts_str = f"PTS: {pts} ({pts_sec:.3f}s)"
+                    
+                    (tw, th), _ = cv2.getTextSize(pts_str, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                    add_region("PTS", curr_field_off, 5, (x+20, cur_y-th-5, x+20+tw, cur_y+5))
+                    
                     cv2.putText(img, pts_str, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 1)
+                    curr_field_off += 5
                 
                 if dts is not None:
                     dts_sec = dts / 90000.0
                     dts_str = f"DTS: {dts} ({dts_sec:.3f}s)"
                     
-                    # PTS 텍스트 길이에 따라 DTS 위치 조정
                     offset_x = 200
                     if pts_str:
                         (w_txt, _), _ = cv2.getTextSize(pts_str, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
                         offset_x = 20 + w_txt + 30
                         
+                    (tw, th), _ = cv2.getTextSize(dts_str, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                    add_region("DTS", curr_field_off, 5, (x+offset_x, cur_y-th-5, x+offset_x+tw, cur_y+5))
+                    
                     cv2.putText(img, dts_str, (x+offset_x, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 1)
                 
                 if pts or dts: cur_y += 25
@@ -458,8 +473,125 @@ class AnalyzerGUI:
             found_start = True
             start_idx = self.current_pkt_idx
             
-            # Start일 때도 하단 간격 살짝 조정 (PES Continuation과 비슷하게)
-            # 기존 cur_y += 25를 삭제하거나 유지하되, Audio Sync를 위해 공간 확보
+        elif pusi and is_psi_pid:
+            # === Case 2: PSI Table Start (No PES Header) ===
+            cv2.putText(img, ">> PSI/SI Table Start <<", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (100, 255, 255), 2)
+            cur_y += 30
+            
+            if len(payload) > 0:
+                ptr = payload[0]
+                if len(payload) > 1 + ptr:
+                    data = payload[1+ptr:]
+                    if len(data) > 3:
+                        tid = data[0]
+                        sec_len = ((data[1] & 0x0F) << 8) | data[2]
+                        base_off = off + 1 + ptr
+                        
+                        # 1. Table ID
+                        tid_desc = f"Table ID: 0x{tid:02X}"
+                        if tid == 0x00: tid_desc += " (PAT)"
+                        elif tid == 0x01: tid_desc += " (CAT)"
+                        elif tid == 0x02: tid_desc += " (PMT)"
+                        
+                        (tw, th), _ = cv2.getTextSize(tid_desc, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                        add_region(f"Table ID (0x{tid:02X})", base_off, 1, (x+20, cur_y-th-5, x+20+tw, cur_y+5))
+                        cv2.putText(img, tid_desc, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                        cur_y += 25
+                        
+                        # 2. Section Length
+                        sec_len_str = f"Section Length: {sec_len} bytes"
+                        (tw, th), _ = cv2.getTextSize(sec_len_str, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                        add_region(f"Section Length ({sec_len})", base_off+1, 2, (x+20, cur_y-th-5, x+20+tw, cur_y+5))
+                        cv2.putText(img, sec_len_str, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                        cur_y += 25
+                        
+                        # === Simple Content Parsing for PAT/PMT ===
+                        if tid == 0x00: # PAT
+                            if len(data) >= 8:
+                                ts_id = (data[3] << 8) | data[4]
+                                ver = (data[5] >> 1) & 0x1F
+                                txt = f"TS ID: 0x{ts_id:04X} | Ver: {ver}"
+                                (tw, th), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                                add_region(f"TS ID (0x{ts_id:04X})", base_off+3, 2, (x+20, cur_y-th-5, x+20+tw, cur_y+5))
+                                cv2.putText(img, txt, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 255, 150), 1)
+                                cur_y += 25
+                                
+                                loop_end = min(3 + sec_len - 4, len(data))
+                                idx = 8
+                                cnt = 0
+                                while idx < loop_end - 3 and cnt < 5: 
+                                    pn = (data[idx] << 8) | data[idx+1]
+                                    pid_val = ((data[idx+2] & 0x1F) << 8) | data[idx+3]
+                                    p_type = "NIT" if pn == 0 else "PMT"
+                                    txt = f"- Prog {pn}: PID 0x{pid_val:X} ({p_type})"
+                                    (tw, th), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                                    add_region(f"Prog {pn} Entry", base_off+idx, 4, (x+40, cur_y-th-5, x+40+tw, cur_y+5))
+                                    cv2.putText(img, txt, (x+40, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                                    cur_y += 25
+                                    idx += 4
+                                    cnt += 1
+                                if idx < loop_end - 3:
+                                    cv2.putText(img, "... more programs ...", (x+40, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+                                    cur_y += 25
+                                    
+                                if len(data) >= 3 + sec_len:
+                                    crc_val = (data[3+sec_len-4]<<24) | (data[3+sec_len-3]<<16) | (data[3+sec_len-2]<<8) | data[3+sec_len-1]
+                                    txt = f"CRC32: 0x{crc_val:08X}"
+                                    (tw, th), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                                    add_region("CRC32", base_off+3+sec_len-4, 4, (x+20, cur_y-th-5, x+20+tw, cur_y+5))
+                                    cv2.putText(img, txt, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 200, 255), 1)
+                                    cur_y += 25
+
+                        elif tid == 0x02: # PMT
+                            if len(data) >= 12:
+                                pcr_pid_val = ((data[8] & 0x1F) << 8) | data[9]
+                                p_len = ((data[10] & 0x0F) << 8) | data[11]
+                                txt = f"PCR PID: 0x{pcr_pid_val:X}"
+                                (tw, th), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                                add_region(f"PCR PID (0x{pcr_pid_val:X})", base_off+8, 2, (x+20, cur_y-th-5, x+20+tw, cur_y+5))
+                                cv2.putText(img, txt, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                                cur_y += 25
+                                
+                                if p_len > 0:
+                                    txt = f"Program Descriptors ({p_len} bytes)"
+                                    (tw, th), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                                    add_region("Program Descriptors", base_off+12, p_len, (x+30, cur_y-th-5, x+30+tw, cur_y+5))
+                                    cv2.putText(img, txt, (x+30, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 150), 1)
+                                    cur_y += 25
+                                
+                                loop_start = 12 + p_len
+                                loop_end = min(3 + sec_len - 4, len(data))
+                                idx = loop_start
+                                cnt = 0
+                                while idx < loop_end - 4 and cnt < 6: 
+                                    stype = data[idx]
+                                    epid = ((data[idx+1] & 0x1F) << 8) | data[idx+2]
+                                    es_info_len = ((data[idx+3] & 0x0F) << 8) | data[idx+4]
+                                    from ts_parser_core import STREAM_TYPES
+                                    st_desc = STREAM_TYPES.get(stype, "Unknown")
+                                    if len(st_desc) > 15: st_desc = st_desc[:15] + "..."
+                                    text = f"- Type 0x{stype:02X} ({st_desc}): PID 0x{epid:X}"
+                                    entry_len = 5 + es_info_len
+                                    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+                                    add_region(f"ES Entry (PID 0x{epid:X})", base_off+idx, entry_len, (x+40, cur_y-th-5, x+40+tw, cur_y+5))
+                                    cv2.putText(img, text, (x+40, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1)
+                                    cur_y += 25
+                                    idx += entry_len
+                                    cnt += 1
+                                if idx < loop_end - 4:
+                                    cv2.putText(img, "... more streams ...", (x+40, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+                                    cur_y += 25
+
+                                if len(data) >= 3 + sec_len:
+                                    crc_val = (data[3+sec_len-4]<<24) | (data[3+sec_len-3]<<16) | (data[3+sec_len-2]<<8) | data[3+sec_len-1]
+                                    txt = f"CRC32: 0x{crc_val:08X}"
+                                    (tw, th), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                                    add_region("CRC32", base_off+3+sec_len-4, 4, (x+20, cur_y-th-5, x+20+tw, cur_y+5))
+                                    cv2.putText(img, txt, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 200, 255), 1)
+                                    cur_y += 25
+            
+            found_start = True
+            start_idx = self.current_pkt_idx
             
         else:
             # PES Continuation
@@ -483,87 +615,84 @@ class AnalyzerGUI:
             dist = 0
             
             # 최적화: 파일을 한 번에 읽어서 메모리 탐색 (Batch Read)
-            try:
-                start_search_idx = max(0, self.current_pkt_idx - search_limit)
-                read_count = self.current_pkt_idx - start_search_idx
-                
-                if read_count > 0:
+            # [수정] PSI PID인 경우 Backtracking 생략
+            if is_psi_pid:
+                cv2.putText(img, "[Info] PSI/SI Table Section (No PES Header)", (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 255, 255), 1)
+                cur_y += 25
+            else:
+                try:
                     with open(self.parser.file_path, "rb") as f:
-                        f.seek(start_search_idx * 188)
-                        chunk_data = f.read(read_count * 188)
-                    
-                    # 역방향 탐색 (메모리)
-                    # chunk_data의 끝에서부터 앞으로 이동
-                    for k in range(read_count):
-                        # k=0 -> 바로 전 패킷 (idx - 1)
-                        # offset calculation
-                        # chunk size = read_count * 188
-                        # target packet start = (read_count - 1 - k) * 188
+                        start_search_idx = max(0, self.current_pkt_idx - search_limit)
+                        read_count = self.current_pkt_idx - start_search_idx
                         
-                        pkt_offset = (read_count - 1 - k) * 188
-                        t_data = chunk_data[pkt_offset : pkt_offset + 188]
+                        if read_count > 0:
+                            f.seek(start_search_idx * 188)
+                            chunk_data = f.read(read_count * 188)
                         
-                        # PID/PUSI Parsing
-                        import struct
-                        h = struct.unpack('>I', t_data[:4])[0]
-                        t_pid = (h >> 8) & 0x1FFF
-                        
-                        if t_pid == self.selected_pid:
-                            dist += 1
-                            
-                            t_pusi = (h >> 22) & 0x1
-                            t_adapt = (h >> 4) & 0x3
-                            
-                            t_off = 4
-                            if t_adapt & 0x2: 
-                                t_off = 5 + t_data[4]
-                            
-                            if t_off < 188:
-                                acc_payload += (188 - t_off)
-                            
-                            if t_pusi:
-                                found_start = True
-                                start_idx = self.current_pkt_idx - 1 - k
+                            # 역방향 탐색 (메모리)
+                            # chunk_data의 끝에서부터 앞으로 이동
+                            for k in range(read_count):
+                                # k=0 -> 바로 전 패킷 (idx - 1)
+                                # offset calculation
+                                # chunk size = read_count * 188
+                                # target packet start = (read_count - 1 - k) * 188
                                 
-                                # PES Header Parsing for Start Packet
-                                t_payload = t_data[t_off:]
-                                pes_info = self.parser.parse_pes_header(t_payload)
+                                pkt_offset = (read_count - 1 - k) * 188
+                                t_data = chunk_data[pkt_offset : pkt_offset + 188]
                                 
-                                if pes_info:
-                                    total_len = pes_info['pes_length']
-                                    current_seq = dist
-                                    processed_bytes = acc_payload + curr_p_len
+                                # PID/PUSI Parsing
+                                import struct
+                                h = struct.unpack('>I', t_data[:4])[0]
+                                t_pid = (h >> 8) & 0x1FFF
+                                
+                                if t_pid == self.selected_pid:
+                                    dist += 1
                                     
-                                    prog_info = ""
-                                    # Video (0) Handling
-                                    if total_len == 0:
-                                        seq_str = f"Seq: {current_seq} (Unbounded)"
-                                        prog_info = f" | Acc: {processed_bytes:,} bytes"
-                                    else:
-                                        pct = (processed_bytes / total_len) * 100
-                                        est_total_pkts = int((total_len + 6) / 184.0) + 1
-                                        prog_info = f" | {pct:.1f}% ({processed_bytes:,}/{total_len:,})"
-                                        seq_str = f"Seq: {current_seq} / ~{est_total_pkts}"
+                                    t_pusi = (h >> 22) & 0x1
+                                    t_adapt = (h >> 4) & 0x3
+                                    
+                                    t_off = 4
+                                    if t_adapt & 0x2: 
+                                        t_off = 5 + t_data[4]
+                                    
+                                    if t_off < 188:
+                                        acc_payload += (188 - t_off)
+                                    
+                                    if t_pusi:
+                                        found_start = True
+                                        start_idx = self.current_pkt_idx - 1 - k
                                         
-                                    # [이동 완료] PES Continuation 바로 아래에 표시
-                                    cv2.putText(img, seq_str + prog_info, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 100), 1)
-                                    cur_y += 25 # 줄바꿈 반영
-                                break
-            except Exception as e:
-                 print(f"[Error] Back-tracking failed: {e}")
-            
-            # cur_y += 10 (삭제: 위에서 줄바꿈 처리함)
+                                        # PES Header Parsing for Start Packet
+                                        t_payload = t_data[t_off:]
+                                        pes_info = self.parser.parse_pes_header(t_payload)
+                                        
+                                        if pes_info:
+                                            total_len = pes_info['pes_length']
+                                            current_seq = dist
+                                            processed_bytes = acc_payload + curr_p_len
+                                            
+                                            prog_info = ""
+                                            # Video (0) Handling
+                                            if total_len == 0:
+                                                seq_str = f"Seq: {current_seq} (Unbounded)"
+                                                prog_info = f" | Acc: {processed_bytes:,} bytes"
+                                            else:
+                                                pct = (processed_bytes / total_len) * 100
+                                                est_total_pkts = int((total_len + 6) / 184.0) + 1
+                                                prog_info = f" | {pct:.1f}% ({processed_bytes:,}/{total_len:,})"
+                                                seq_str = f"Seq: {current_seq} / ~{est_total_pkts}"
+                                                
+                                            # [이동 완료] PES Continuation 바로 아래에 표시
+                                            cv2.putText(img, seq_str + prog_info, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 100), 1)
+                                            cur_y += 25 # 줄바꿈 반영
+                                        break
+                except Exception as e:
+                     print(f"[Error] Back-tracking failed: {e}")
             
             # PES Navigation Target 업데이트 (좌표는 위에서 계산됨)
         # 버튼이 눌렸을 때 동작하도록 targets 딕셔너리를 갱신해야 함
         if found_start:
             self.pes_nav_targets['pes_prev']['idx'] = start_idx
-        
-        # 점프 링크 (삼각형 버튼 아이콘) - 이제 필요없으므로 좌표만 유지하거나 삭제
-        # target_idx = start_idx if found_start else -2
-        
-        # 클릭 영역 저장 (이전 텍스트 링크 영역 삭제)
-        # self.pes_jump_target = ... (삭제)
         
         # 클릭 피드백 (버튼 위치에 사각형 그리기)
         if hasattr(self, 'last_click_time') and hasattr(self, 'last_click_target'):
@@ -573,11 +702,6 @@ class AnalyzerGUI:
                 elif self.last_click_target == 'pes_next':
                      cv2.rectangle(img, btn_pes_next_rect[:2], btn_pes_next_rect[2:], (0, 0, 255), 2)
 
-        # cur_y += 10 # (삭제) 버튼 공간 제거하여 위쪽 정보와 밀착
-        
-        # Part of Multi-Packet PES 문구는 이제 위 링크로 대체되거나 아래에 보조로 표시
-        # cv2.putText(img, "Part of Multi-Packet PES", ... ) # 생략 또는 유지
-        
         # Simple Audio Sync Check
         if len(payload) > 2:
             for i in range(len(payload)-1):
@@ -655,9 +779,61 @@ class AnalyzerGUI:
                 'color': (0, 255, 255) # Yellow Highlight in Hex
             })
             cur_y += line_h
+        
+        # [추가] ETR-290 Section Check (PAT/PMT)
+        # 현재 PID가 PAT(0)이거나 PMT PID인 경우 검사
+        section_check_str = ""
+        is_psi_table = False
+        
+        if pid == 0 and pusi:
+            # PAT Check
+            res = self.parser._parse_pat(self.current_hex_data, adapt)
+            if res:
+                if res['valid_crc'] is None:
+                    crc_status = "Incomplete"
+                elif res['valid_crc']:
+                    crc_status = f"OK (0x{res['calc_crc']:08X})"
+                else:
+                    # Fail case: show calc vs expected
+                    calc = res['calc_crc'] if res['calc_crc'] is not None else 0
+                    exp = res['expected_crc'] if res['expected_crc'] is not None else 0
+                    crc_status = f"FAIL (Cal:0x{calc:08X}, Exp:0x{exp:08X})"
+                
+                section_check_str = f"PAT Check | CRC: {crc_status} | TID: {'OK' if res['valid_tid'] else 'FAIL'}"
+                is_psi_table = True
+        
+        elif self.selected_program and self.selected_program in self.parser.programs:
+            prog = self.parser.programs[self.selected_program]
+            if pid == prog['pmt_pid'] and pusi:
+                # PMT Check
+                dummy_node = {'pids': {}} 
+                res = self.parser._parse_pmt(self.current_hex_data, adapt, dummy_node)
+                if res:
+                    if res['valid_crc'] is None:
+                        crc_status = "Incomplete"
+                    elif res['valid_crc']:
+                        crc_status = f"OK (0x{res['calc_crc']:08X})"
+                    else:
+                        calc = res['calc_crc'] if res['calc_crc'] is not None else 0
+                        exp = res['expected_crc'] if res['expected_crc'] is not None else 0
+                        crc_status = f"FAIL (Cal:0x{calc:08X}, Exp:0x{exp:08X})"
+
+                    section_check_str = f"PMT Check | CRC: {crc_status} | TID: {'OK' if res['valid_tid'] else 'FAIL'}"
+                    is_psi_table = True
 
         # Fixed Header Fields (Byte 0, 1)
         draw_field(f"Sync Byte: 0x47", "Sync Byte", (0, 1))
+        
+        # ETR-290 Info Display
+        if is_psi_table:
+            if "FAIL" in section_check_str:
+                check_color = (100, 100, 255) # Red
+            elif "Incomplete" in section_check_str:
+                check_color = (100, 255, 255) # Yellow/Cyan
+            else:
+                check_color = (100, 255, 100) # Green
+            draw_field(section_check_str, "Section Check", (0, 188), color=check_color)
+
         draw_field(f"Transport Error Indicator (TEI): {tei}", "TEI", (1, 2))
         draw_field(f"Payload Unit Start Indicator (PUSI): {pusi}", "PUSI", (1, 2))
         draw_field(f"Transport Priority: {prio}", "Transport Priority", (1, 2))
@@ -867,7 +1043,7 @@ class AnalyzerGUI:
         elif self.current_pkt_idx > 0:
             status_text = "PAUSED"
             status_color = (255, 255, 0)
-        cv2.putText(img, status_text, (700, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
+        cv2.putText(img, status_text, (550, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
 
     def _draw_report_overlay(self, img):
         overlay = img.copy()
@@ -915,6 +1091,10 @@ class AnalyzerGUI:
         cv2.putText(img, "The GUI remains responsive. You can continue to analyze packets.", (bar_x, bar_y + 110), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
 
     def _mouse_cb(self, event, x, y, flags, param):
+        # Update mouse coordinates globally
+        self.mouse_x = x
+        self.mouse_y = y
+
         if event == cv2.EVENT_MOUSEMOVE:
             self.ui.handle_mouse_move(x, y)
             
@@ -1034,11 +1214,33 @@ class AnalyzerGUI:
             # 3. Tree View Selection
             # PAT 영역 (y: 60~480)
             if 0 <= x <= 400 and 60 <= y <= 480:
+                # [New] Click Title "PAT (Programs)" to select PID 0
+                if 60 <= y <= 90:
+                    self.selected_pid = 0
+                    # [수정] PAT 선택 시 개별 프로그램 선택 해제
+                    self.selected_program = None
+                    
+                    # [UI 연동] 모든 필터 끄고 PAT만 켬 (Exclusive)
+                    for k in self.active_filters: self.active_filters[k] = False
+                    self.active_filters['PAT'] = True
+                    
+                    print("[UI] Selected PAT -> Toolbar: PAT Only")
+                    return
+
                 cur_y = 60 + 50
                 for prog_num in self.parser.programs.keys():
                     if cur_y - 20 <= y <= cur_y + 5:
                         self.selected_program = prog_num
-                        self.selected_pid = None # PMT 초기화
+                        
+                        # [수정] 프로그램 선택 시 해당 PMT PID를 자동 선택하여 바로 보여줌
+                        prog_info = self.parser.programs[prog_num]
+                        self.selected_pid = prog_info['pmt_pid']
+                        
+                        # [UI 연동] 프로그램 선택 시 PMT 필터 활성화
+                        for k in self.active_filters: self.active_filters[k] = False
+                        self.active_filters['PMT'] = True
+                        print(f"[UI] Selected Program {prog_num} (PMT: 0x{self.selected_pid:X}) -> Toolbar: PMT Only")
+                        
                         break
                     cur_y += 25
             
@@ -1051,6 +1253,10 @@ class AnalyzerGUI:
                     # 1. PMT PID Check
                     if cur_y - 20 <= y <= cur_y + 5:
                         self.selected_pid = prog['pmt_pid']
+                        # [UI 연동] PMT 필터 활성화 (나머지 OFF)
+                        for k in self.active_filters: self.active_filters[k] = False
+                        self.active_filters['PMT'] = True
+                        print("[UI] Selected PMT PID -> Toolbar: PMT Only")
                     else:
                         # 2. Components Check
                         cur_y += 25
@@ -1059,23 +1265,16 @@ class AnalyzerGUI:
                                 self.selected_pid = pid
                                 
                                 # Sync with Filter Buttons
-                                # 선택된 PID의 타입을 확인하여 Video/Audio 필터 자동 활성화
                                 pid_info = self.parser.pid_map.get(pid, {})
                                 pid_type = pid_info.get('type', 0)
                                 desc = pid_info.get('desc', '')
                                 
-                                # Video Types
-                                if pid_type in [0x01, 0x02, 0x1B, 0x24] or "Video" in desc:
-                                    self.active_filters['Video'] = True
-                                    self.active_filters['Audio'] = False
-                                # Audio Types
-                                elif pid_type in [0x03, 0x04, 0x0F, 0x81] or "Audio" in desc:
-                                    self.active_filters['Audio'] = True
-                                    self.active_filters['Video'] = False
-                                else:
-                                    # 그 외 타입이면 둘 다 끔
-                                    self.active_filters['Video'] = False
-                                    self.active_filters['Audio'] = False
+                                # [수정] 좌측 트리에서 PID 선택 시: 해당 PID만 단독 필터링 (Exclusive)
+                                # 툴바 필터 버튼(전체 타입 필터)은 모두 끕니다.
+                                # 사용자가 특정 PID를 찍었다는 건 그것만 보겠다는 뜻이기 때문입니다.
+                                for k in self.active_filters: self.active_filters[k] = False
+                                
+                                print(f"[UI] Selected PID 0x{pid:X} -> All Global Filters OFF (Single PID Focus)")
                                 
                                 break
                             cur_y += 25
@@ -1121,6 +1320,30 @@ class AnalyzerGUI:
                 new_state = not self.active_filters[f_name]
                 self.active_filters[f_name] = new_state
                 print(f"[Filter] {f_name} -> {new_state}")
+                
+                # [UX 개선] 필터 버튼 클릭 시 해당 PID 자동 선택 및 화면 전환
+                if new_state:
+                    if f_name == 'PAT':
+                        self.selected_pid = 0
+                        self.selected_program = None # PAT 집중을 위해 프로그램 선택 해제
+                        # 다른 필터 끄기 (PAT 독점)
+                        for k in self.active_filters: 
+                            if k != 'PAT': self.active_filters[k] = False
+                        print("[Auto] PAT Button -> Selected PID 0")
+                        
+                    elif f_name == 'PMT':
+                        # 현재 선택된 프로그램이 있으면 그 PMT, 없으면 첫 번째 프로그램의 PMT 선택
+                        target_prog = self.selected_program
+                        if target_prog is None and self.parser.programs:
+                            target_prog = list(self.parser.programs.keys())[0]
+                            self.selected_program = target_prog
+                        
+                        if target_prog and target_prog in self.parser.programs:
+                            self.selected_pid = self.parser.programs[target_prog]['pmt_pid']
+                            # 다른 필터 끄기
+                            for k in self.active_filters:
+                                if k != 'PMT': self.active_filters[k] = False
+                            print(f"[Auto] PMT Button -> Selected Prog {target_prog}, PID 0x{self.selected_pid:X}")
                 
                 # Sync with PMT Selection (Video/Audio Only)
                 if f_name in ['Video', 'Audio']:
@@ -1211,10 +1434,16 @@ class AnalyzerGUI:
         self.parser.quick_scan(limit=20000)
         
         if self.parser.programs:
-            first = list(self.parser.programs.keys())[0]
-            self.selected_program = first
-            if self.parser.programs[first]['pids']:
-                self.selected_pid = list(self.parser.programs[first]['pids'].keys())[0]
+            # 0번이 아닌 프로그램 중 가장 먼저 나오는 것 선택
+            valid_progs = [p for p in self.parser.programs.keys() if p != 0]
+            if valid_progs:
+                first = sorted(valid_progs)[0]
+                self.selected_program = first
+                self.selected_pid = self.parser.programs[first]['pmt_pid']
+                self.active_filters['PMT'] = True
+            elif 0 in self.parser.programs:
+                self.selected_program = 0
+                self.selected_pid = self.parser.programs[0]['pmt_pid']
                 
         self.update_packet_view()
 
@@ -1270,6 +1499,15 @@ class AnalyzerGUI:
                             
                             if self.active_filters['PTS'] and (pts_dts_flag & 0x2): return True
                             if self.active_filters['DTS'] and (pts_dts_flag & 0x1): return True
+
+        # 5. PAT / PMT Filter
+        if self.active_filters.get('PAT', False):
+            if pid == 0: return True
+            
+        if self.active_filters.get('PMT', False):
+            # Check against known PMT PIDs
+            for prog in self.parser.programs.values():
+                if pid == prog['pmt_pid']: return True
 
         return False
 

@@ -50,11 +50,11 @@ class UIManager:
         # 버튼 영역 끝 저장 (Status 텍스트 배치용)
         self.last_btn_end_x = cur_x
             
-        # Filter Buttons (Video, Audio, PCR, PTS, DTS)
-        # Start after Tool Status Text (~900px)
-        filter_start_x = 950
+        # Filter Buttons (PAT, PMT, Video, Audio, PCR, PTS, DTS)
+        # Start after Tool Status Text (~900px) -> 조금 더 당김 (880) -> 오른쪽으로 이동 (920)
+        filter_start_x = 920
         filter_w = 60
-        filters = ['Video', 'Audio', 'PCR', 'PTS', 'DTS']
+        filters = ['PAT', 'PMT', 'Video', 'Audio', 'PCR', 'PTS', 'DTS']
         
         for f_name in filters:
             self.buttons.append({
@@ -161,11 +161,22 @@ class UIManager:
         # Status Text 위치: 일반 버튼들과 필터 버튼들(950) 사이의 중앙
         # 대략 (last_btn_end_x + 950) / 2
         # 만약 last_btn_end_x가 정의되지 않았으면 기본값 700 사용
-        status_x = 700
+        status_x = 450 # 700 -> 450 (왼쪽으로 이동)
         if hasattr(self, 'last_btn_end_x'):
-            status_x = int((self.last_btn_end_x + 950) / 2) - 50 # 텍스트 길이 고려해서 살짝 왼쪽으로
+            # status_x = int((self.last_btn_end_x + 950) / 2) - 50
+            # 명시적 위치 지정 (버튼 그룹 사이)
+            status_x = self.last_btn_end_x + 20 
             
-        cv2.putText(img, status_text, (status_x, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
+        # 두 줄로 나눠서 출력
+        # Line 1: Main Status
+        line1_text = status_text.split('(')[0].strip()
+        # 폰트 크기 0.8로 복귀, 위치 조정 (밑으로 조금 내려가도 됨)
+        cv2.putText(img, line1_text, (status_x, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
+        
+        # Line 2: Speed / Info
+        if '(' in status_text:
+            line2_text = '(' + status_text.split('(')[1]
+            cv2.putText(img, line2_text, (status_x, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
         
         if self.menu_open:
             self.draw_menu(img)

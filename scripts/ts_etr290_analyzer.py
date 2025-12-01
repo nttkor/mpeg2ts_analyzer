@@ -44,6 +44,15 @@ class TSETR290Analyzer:
         # 측정된 통계값 저장 (Max Interval 등)
         self.error_stats = {}
 
+    def report_section_error(self, pid, error_type):
+        """외부 모듈(Core)에서 감지된 섹션 에러(CRC, Table ID 등) 보고"""
+        if error_type == 'CRC_error':
+            self.errors['CRC_error'] += 1
+        elif error_type == 'Table_ID_error':
+            # 1.3b PAT, 1.5b PMT Table ID Error
+            if pid == 0: self.errors['PAT_error'] += 1
+            elif pid in self.valid_pmt_pids: self.errors['PMT_error'] += 1
+
     def process_packet(self, packet, offset, pid, pusi, adapt, cnt):
         """
         개별 패킷을 검사하여 즉시 확인 가능한 에러(1.2, 1.4, 2.1)를 체크하고 상태를 기록함.
