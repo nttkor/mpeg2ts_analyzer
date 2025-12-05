@@ -78,37 +78,47 @@ class AnalyzerGUI:
         # Initializing Screen
         img = np.zeros((900, 1400, 3), dtype=np.uint8)
         img[:] = COLOR_BG
-        cv2.putText(img, "Initializing...", (600, 450), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (200, 200, 200), 2)
+        
+        # [수정] 파일 로드 여부에 따른 메시지 표시
+        msg = "Initializing..." if self.parser.file_path and os.path.exists(self.parser.file_path) else "No File Loaded. Open File from Menu."
+        cv2.putText(img, msg, (400, 450), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 200), 2)
+        
         cv2.imshow(self.window_name, img)
         cv2.waitKey(10)
         
-        self.parser.quick_scan(limit=20000)
-        
-        # Auto Select First Valid Program (Skip Prog 0/NIT) & PMT
-        if self.parser.programs:
-            # 0번이 아닌 프로그램 중 가장 먼저 나오는 것 선택
-            valid_progs = [p for p in self.parser.programs.keys() if p != 0]
-            if valid_progs:
-                first_prog_id = sorted(valid_progs)[0]
-                self.selected_program = first_prog_id
-                
-                prog_info = self.parser.programs[first_prog_id]
-                # PMT PID 자동 선택
-                self.selected_pid = prog_info['pmt_pid']
-                
-                # PMT 필터 활성화
-                self.active_filters['PMT'] = True
-                print(f"[Auto] Initial Selection: Program {first_prog_id} (PMT PID: 0x{self.selected_pid:X})")
-            elif 0 in self.parser.programs:
-                # 0번밖에 없으면 어쩔 수 없이 0번 선택
-                self.selected_program = 0
-                self.selected_pid = self.parser.programs[0]['pmt_pid']
-        
-        self.current_pkt_idx = 0
-        self.playing = False
-        self.update_packet_view()
+        # 파일이 있을 때만 스캔 진행
+        if self.parser.file_path and os.path.exists(self.parser.file_path):
+            self.parser.quick_scan(limit=20000)
+            
+            # Auto Select First Valid Program (Skip Prog 0/NIT) & PMT
+            if self.parser.programs:
+                # 0번이 아닌 프로그램 중 가장 먼저 나오는 것 선택
+                valid_progs = [p for p in self.parser.programs.keys() if p != 0]
+                if valid_progs:
+                    first_prog_id = sorted(valid_progs)[0]
+                    self.selected_program = first_prog_id
+                    
+                    prog_info = self.parser.programs[first_prog_id]
+                    # PMT PID 자동 선택
+                    self.selected_pid = prog_info['pmt_pid']
+                    
+                    # PMT 필터 활성화
+                    self.active_filters['PMT'] = True
+                    print(f"[Auto] Initial Selection: Program {first_prog_id} (PMT PID: 0x{self.selected_pid:X})")
+                elif 0 in self.parser.programs:
+                    # 0번밖에 없으면 어쩔 수 없이 0번 선택
+                    self.selected_program = 0
+                    self.selected_pid = self.parser.programs[0]['pmt_pid']
+            
+            self.current_pkt_idx = 0
+            self.playing = False
+            self.update_packet_view()
+        else:
+            print("[UI] Started without file.")
 
         while True:
+            # print(f"[Loop] Idx: {self.current_pkt_idx}, Playing: {self.playing}") # 디버그용
+            
             # OpenCV Window X 버튼(닫기) 감지
             try:
                 if cv2.getWindowProperty(self.window_name, cv2.WND_PROP_VISIBLE) < 1:
@@ -157,8 +167,8 @@ class AnalyzerGUI:
         cv2.rectangle(img, (0, 0), (1400, 60), (50, 50, 50), -1)
         self.ui.draw_toolbar(img)
         
-        # Left: PAT / PMT (2분할, 높이 420씩)
-        self._draw_pat_view(img, 0, 60, 400, 420)
+        # Left: PSI (PAT/CAT/NIT...) / PMT (2분할, 높이 420씩)
+        self._draw_psi_view(img, 0, 60, 400, 420)
         self._draw_pmt_view(img, 0, 480, 400, 420)
         
         # Right: Detail / PES / Hex (3분할, 높이 조정)
@@ -177,48 +187,80 @@ class AnalyzerGUI:
         if self.ui.menu_open:
             self.ui.draw_menu(img)
 
-    def _draw_pat_view(self, img, x, y, w, h):
+    def _draw_psi_view(self, img, x, y, w, h):
         cv2.rectangle(img, (x, y), (x+w, y+h), (40, 40, 40), -1)
         cv2.rectangle(img, (x, y), (x+w, y+h), (100, 100, 100), 1)
         
-        prog_count = len(self.parser.programs)
-        
-        # [UI 개선] 타이틀 영역 하이라이트 (클릭 가능 피드백)
-        title_rect_h = 30
-        if 0 <= self.mouse_x - x <= w and 0 <= self.mouse_y - y <= title_rect_h:
-            cv2.rectangle(img, (x, y), (x+w, y+title_rect_h), (60, 60, 60), -1)
-            
-        cv2.putText(img, f"PAT (Programs: {prog_count})", (x+10, y+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+        # Title
+        cv2.putText(img, "PSI Information", (x+10, y+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
         
         cur_y = y + 50
-        for prog_num, prog in self.parser.programs.items():
-            color = (200, 200, 200)
-            text = f"Program {prog_num} (PMT PID: 0x{prog['pmt_pid']:X})"
-            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        indent = 20
+        
+        # Helper to check PID existence
+        def check_pid(pid):
+            return pid in self.parser.pid_counts or pid in self.parser.pid_map
             
-            # 텍스트 영역 정밀 계산
-            # 기존: 전체 너비 체크 -> 변경: 텍스트 너비 + 여유공간 체크
-            rect_x1, rect_y1 = x + 20, cur_y - th - 5
-            rect_x2, rect_y2 = x + 20 + tw, cur_y + 5
+        # PSI Table List
+        psi_tables = [
+            {'name': 'PAT (PID 0x0000)', 'pid': 0x0000, 'always': True},
+            {'name': 'CAT (PID 0x0001)', 'pid': 0x0001, 'always': False},
+            {'name': 'TSDT (PID 0x0002)', 'pid': 0x0002, 'always': False},
+            {'name': 'NIT (PID 0x0010)', 'pid': 0x0010, 'always': False},
+            {'name': 'SDT (PID 0x0011)', 'pid': 0x0011, 'always': False},
+            {'name': 'EIT (PID 0x0012)', 'pid': 0x0012, 'always': False},
+            {'name': 'TDT/TOT (PID 0x0014)', 'pid': 0x0014, 'always': False}
+        ]
+        
+        for tbl in psi_tables:
+            if not tbl['always'] and not check_pid(tbl['pid']):
+                continue
+                
+            text = tbl['name']
+            pid = tbl['pid']
+            
+            # Draw Item
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            rect_x1, rect_y1 = x + indent, cur_y - th - 5
+            rect_x2, rect_y2 = x + indent + tw, cur_y + 5
             
             is_hover = (rect_x1 <= self.mouse_x <= rect_x2 and rect_y1 <= self.mouse_y <= rect_y2)
-            is_selected = (self.selected_program == prog_num)
+            is_selected = (self.selected_pid == pid)
             
+            color = (200, 200, 200)
             if is_selected:
-                color = (0, 255, 255) # Cyan
+                color = (0, 255, 255)
                 cv2.rectangle(img, (rect_x1-5, rect_y1), (rect_x2+5, rect_y2), (60, 60, 80), -1)
             elif is_hover:
-                color = (255, 255, 200) # Bright
+                color = (255, 255, 200)
                 cv2.rectangle(img, (rect_x1-5, rect_y1), (rect_x2+5, rect_y2), (80, 80, 100), -1)
-            
-            thickness = 2 if is_hover or is_selected else 1
-            cv2.putText(img, text, (x+20, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, thickness)
-            
-            # Register Region for Click Handling (if needed globally)
-            # 여기서는 로컬 렌더링 루프에서 처리하지만, 전역 클릭 처리를 위해 등록할 수도 있음
-            # 하지만 _mouse_cb에서 좌표 기반으로 처리하므로 시각적 피드백만 주면 됨.
-            
+                
+            cv2.putText(img, text, (x + indent, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             cur_y += 25
+            
+            # Special Handling for PAT: Draw Programs
+            if pid == 0x0000:
+                prog_indent = indent + 20
+                for prog_num, prog in self.parser.programs.items():
+                    p_text = f"- Program {prog_num} (PMT: 0x{prog['pmt_pid']:X})"
+                    (ptw, pth), _ = cv2.getTextSize(p_text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+                    
+                    pr_x1, pr_y1 = x + prog_indent, cur_y - pth - 5
+                    pr_x2, pr_y2 = x + prog_indent + ptw, cur_y + 5
+                    
+                    p_hover = (pr_x1 <= self.mouse_x <= pr_x2 and pr_y1 <= self.mouse_y <= pr_y2)
+                    p_selected = (self.selected_program == prog_num)
+                    
+                    p_color = (180, 180, 180)
+                    if p_selected:
+                        p_color = (0, 255, 0)
+                        cv2.rectangle(img, (pr_x1-5, pr_y1), (pr_x2+5, pr_y2), (50, 80, 50), -1)
+                    elif p_hover:
+                        p_color = (220, 255, 220)
+                        cv2.rectangle(img, (pr_x1-5, pr_y1), (pr_x2+5, pr_y2), (60, 70, 60), -1)
+                        
+                    cv2.putText(img, p_text, (x + prog_indent, cur_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, p_color, 1)
+                    cur_y += 25
 
     def _draw_pmt_view(self, img, x, y, w, h):
         cv2.rectangle(img, (x, y), (x+w, y+h), (30, 30, 35), -1)
@@ -605,13 +647,13 @@ class AnalyzerGUI:
             
             curr_p_len = len(payload)
             
-            # Video 스트림이면 탐색 범위를 크게 잡음 (50,000 패킷 = 약 9.4MB)
-            # 일반 Audio/Data는 5,000 패킷이면 충분
+            # Video 스트림이면 탐색 범위를 크게 잡음 (기존 50,000 -> 10,000으로 축소)
+            # 대용량 파일(1.8GB)에서 UI 멈춤 방지를 위해 제한
             is_video = False
             pid_info = self.parser.pid_map.get(self.selected_pid, {})
             if "Video" in pid_info.get('desc', ''): is_video = True
             
-            search_limit = 50000 if is_video else 5000 
+            search_limit = 10000 if is_video else 2000 
             dist = 0
             
             # 최적화: 파일을 한 번에 읽어서 메모리 탐색 (Batch Read)
@@ -1212,37 +1254,60 @@ class AnalyzerGUI:
                         return # Playback 루프에서 처리됨
 
             # 3. Tree View Selection
-            # PAT 영역 (y: 60~480)
+            # PSI 영역 (y: 60~480)
             if 0 <= x <= 400 and 60 <= y <= 480:
-                # [New] Click Title "PAT (Programs)" to select PID 0
-                if 60 <= y <= 90:
-                    self.selected_pid = 0
-                    # [수정] PAT 선택 시 개별 프로그램 선택 해제
-                    self.selected_program = None
-                    
-                    # [UI 연동] 모든 필터 끄고 PAT만 켬 (Exclusive)
-                    for k in self.active_filters: self.active_filters[k] = False
-                    self.active_filters['PAT'] = True
-                    
-                    print("[UI] Selected PAT -> Toolbar: PAT Only")
-                    return
-
                 cur_y = 60 + 50
-                for prog_num in self.parser.programs.keys():
+                indent = 20
+                
+                # Helper to check PID existence (Must match draw logic)
+                def check_pid(pid):
+                    return pid in self.parser.pid_counts or pid in self.parser.pid_map
+                
+                psi_tables = [
+                    {'name': 'PAT', 'pid': 0x0000, 'always': True},
+                    {'name': 'CAT', 'pid': 0x0001, 'always': False},
+                    {'name': 'TSDT', 'pid': 0x0002, 'always': False},
+                    {'name': 'NIT', 'pid': 0x0010, 'always': False},
+                    {'name': 'SDT', 'pid': 0x0011, 'always': False},
+                    {'name': 'EIT', 'pid': 0x0012, 'always': False},
+                    {'name': 'TDT', 'pid': 0x0014, 'always': False}
+                ]
+                
+                for tbl in psi_tables:
+                    if not tbl['always'] and not check_pid(tbl['pid']):
+                        continue
+                        
+                    # Check Click on Table Item
                     if cur_y - 20 <= y <= cur_y + 5:
-                        self.selected_program = prog_num
+                        self.selected_pid = tbl['pid']
+                        self.selected_program = None
                         
-                        # [수정] 프로그램 선택 시 해당 PMT PID를 자동 선택하여 바로 보여줌
-                        prog_info = self.parser.programs[prog_num]
-                        self.selected_pid = prog_info['pmt_pid']
-                        
-                        # [UI 연동] 프로그램 선택 시 PMT 필터 활성화
+                        # Filter Logic
                         for k in self.active_filters: self.active_filters[k] = False
-                        self.active_filters['PMT'] = True
-                        print(f"[UI] Selected Program {prog_num} (PMT: 0x{self.selected_pid:X}) -> Toolbar: PMT Only")
                         
-                        break
+                        if tbl['pid'] == 0x0000:
+                            self.active_filters['PAT'] = True
+                            print(f"[UI] Selected {tbl['name']} -> Toolbar: PAT Filter On")
+                        else:
+                            print(f"[UI] Selected {tbl['name']} (PID 0x{tbl['pid']:X}) -> Filters Off (Raw View)")
+                        return
+                        
                     cur_y += 25
+                    
+                    # PAT Sub-items (Programs)
+                    if tbl['pid'] == 0x0000:
+                        for prog_num in self.parser.programs.keys():
+                            if cur_y - 20 <= y <= cur_y + 5:
+                                self.selected_program = prog_num
+                                
+                                prog_info = self.parser.programs[prog_num]
+                                self.selected_pid = prog_info['pmt_pid']
+                                
+                                for k in self.active_filters: self.active_filters[k] = False
+                                self.active_filters['PMT'] = True
+                                print(f"[UI] Selected Program {prog_num} -> Toolbar: PMT Filter On")
+                                return
+                            cur_y += 25
             
             # PMT 영역 (y: 480~900)
             elif 0 <= x <= 400 and 480 <= y <= 900:
@@ -1394,21 +1459,35 @@ class AnalyzerGUI:
 
     def _open_file(self, path=None):
         if not path:
+            # [수정] 창을 닫지 않고 유지 (메인 루프 안정성)
             try:
                 root = tk.Tk()
-                root.withdraw() # 메인 윈도우 숨김
-                # 최상위로 띄우기 위한 트릭
+                root.withdraw()
                 root.attributes('-topmost', True)
+                
+                # 다이얼로그 호출 전 이벤트 처리
+                for _ in range(5):
+                    root.update()
+                    cv2.waitKey(1)
+                
                 path = filedialog.askopenfilename(
                     title="Open MPEG2-TS File",
                     filetypes=[("MPEG2-TS Files", "*.ts;*.tp;*.m2ts"), ("All Files", "*.*")]
                 )
+                
+                # 다이얼로그 종료 후 이벤트 처리
+                root.update()
                 root.destroy()
+                for _ in range(5):
+                    cv2.waitKey(1)
+                
             except Exception as e:
                 print(f"[Error] File Dialog failed: {e}")
                 return
         
         if not path or not os.path.exists(path): return
+        
+        print(f"[System] Opening file: {path}")
         
         # Reset Logic
         if self.scanner.running: self.scanner.stop()
@@ -1416,7 +1495,8 @@ class AnalyzerGUI:
         # Re-initialize
         self.parser = TSParser(path)
         self.scanner = TSScanner(self.parser)
-        self._add_recent(path)
+        # [수정] UIManager의 add_recent 사용
+        self.ui.add_recent(path)
         
         # Reset State
         self.current_pkt_idx = 0
@@ -1426,21 +1506,30 @@ class AnalyzerGUI:
         self.bscan_running = False
         self.show_report = False
         
-        # PES Search State
+        # Filter Reset
+        for k in self.active_filters: self.active_filters[k] = False
+        
+        # PES Search State Reset
         self.pes_search_mode = False
         self.search_target_pid = None
         
-        # Init Scan (UI blocking for short time)
+        # Init Scan
+        print("[System] Scanning new file...")
         self.parser.quick_scan(limit=20000)
+        print(f"[System] Scan finished. Found {len(self.parser.programs)} programs.")
         
+        # Auto Select Logic
         if self.parser.programs:
-            # 0번이 아닌 프로그램 중 가장 먼저 나오는 것 선택
             valid_progs = [p for p in self.parser.programs.keys() if p != 0]
             if valid_progs:
                 first = sorted(valid_progs)[0]
                 self.selected_program = first
-                self.selected_pid = self.parser.programs[first]['pmt_pid']
+                
+                prog_info = self.parser.programs[first]
+                self.selected_pid = prog_info['pmt_pid']
+                
                 self.active_filters['PMT'] = True
+                print(f"[Auto] File Open -> Selected Program {first} (PMT PID: 0x{self.selected_pid:X})")
             elif 0 in self.parser.programs:
                 self.selected_program = 0
                 self.selected_pid = self.parser.programs[0]['pmt_pid']
@@ -1774,6 +1863,28 @@ class AnalyzerGUI:
         except: pass
 
 if __name__ == "__main__":
-    ts_file = r"D:\git\mpeg2TS\TS\mama_uhd2.ts"
+    import json
+    ts_file = None
+    
+    # 1. Command Line Argument Check
+    if len(sys.argv) > 1:
+        ts_file = sys.argv[1]
+    
+    # 2. Recent File Check
+    if not ts_file or not os.path.exists(ts_file):
+        try:
+            if os.path.exists("recent_files.json"):
+                with open("recent_files.json", "r") as f:
+                    recents = json.load(f)
+                    if recents and os.path.exists(recents[0]):
+                        ts_file = recents[0]
+                        print(f"[Auto] Loading recent file: {ts_file}")
+        except: pass
+    
+    # 3. Default Fallback (Optional)
+    if not ts_file:
+        # ts_file = r"D:\git\mpeg2TS\TS\mama_uhd2.ts" # Remove Hardcoding
+        print("[Info] No file specified. Starting empty.")
+
     app = AnalyzerGUI(ts_file)
     app.run()

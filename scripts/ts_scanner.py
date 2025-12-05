@@ -278,15 +278,68 @@ class TSScanner:
 
         lines.append("")
         
-        # --- 1. Program Structure ---
-        lines.append("## 1. Program Structure (PSI)")
-        for prog_num, prog in self.parser.programs.items():
-            lines.append(f"* **Program {prog_num}** (PMT PID: 0x{prog['pmt_pid']:04X})")
-            pcr_pid = prog.get('pcr_pid_val', 0)
-            lines.append(f"  - PCR PID: 0x{pcr_pid:04X}")
-            for pid, info in prog['pids'].items():
-                role = "PCR/Video" if pid == pcr_pid and "Video" in info['desc'] else info['desc']
-                lines.append(f"  - PID 0x{pid:04X}: {role}")
+        # --- 1. PSI/SI Structure ---
+        lines.append("## 1. PSI/SI Structure")
+        
+        # 1-1. PSI Table Summary
+        psi_pids = {
+            0x0000: "PAT (Program Association Table)",
+            0x0001: "CAT (Conditional Access Table)",
+            0x0002: "TSDT (TS Description Table)",
+            0x0010: "NIT (Network Information Table)",
+            0x0011: "SDT (Service Description Table)",
+            0x0012: "EIT (Event Information Table)",
+            0x0014: "TDT/TOT (Time Date Table)"
+        }
+        
+        found_psi = []
+        for pid, name in psi_pids.items():
+            if pid in self.parser.pid_counts:
+                count = self.parser.pid_counts[pid]
+                found_psi.append(f"- **{name}**: Found ({count} packets)")
+        
+        if found_psi:
+            lines.append("### Detected Tables")
+            lines.extend(found_psi)
+            lines.append("")
+            
+        # 1-2. PAT & Program Hierarchy
+        lines.append("### PAT & Program Hierarchy")
+        if 0 in self.parser.pid_counts:
+            lines.append("- **PAT (PID 0x0000)**")
+            
+            # Sort programs by number
+            sorted_progs = sorted(self.parser.programs.items())
+            
+            for prog_num, prog in sorted_progs:
+                pmt_pid = prog['pmt_pid']
+                p_type = "NIT" if prog_num == 0 else "Program"
+                
+                lines.append(f"  - **{p_type} {prog_num}**")
+                lines.append(f"    - PMT PID: 0x{pmt_pid:04X}")
+                
+                # PMT Details
+                pcr_pid = prog.get('pcr_pid_val', 0x1FFF)
+                if pcr_pid != 0x1FFF:
+                    lines.append(f"    - PCR PID: 0x{pcr_pid:04X}")
+                
+                if not prog['pids']:
+                    lines.append(f"    - (No components found or PMT not parsed)")
+                else:
+                    for pid, info in prog['pids'].items():
+                        # Highlight if Video or Audio
+                        desc = info['desc']
+                        icon = ""
+                        if "Video" in desc: icon = "📺 "
+                        elif "Audio" in desc: icon = "🔊 "
+                        
+                        role = ""
+                        if pid == pcr_pid: role = " (PCR)"
+                        
+                        lines.append(f"    - PID 0x{pid:04X}: {icon}{desc}{role}")
+        else:
+            lines.append("- **PAT not found** (Stream might be partial or invalid)")
+            
         lines.append("")
 
         # --- 2. PID Statistics (Table) ---

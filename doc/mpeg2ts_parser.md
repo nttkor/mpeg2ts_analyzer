@@ -13,113 +13,65 @@ Tektronix MTS430과 같은 전문 계측기의 UX를 지향하여 직관적인 *
 ```
 mpeg2TS/
 ├── scripts/
-│   ├── ts_analyzer_gui.py   # [Main] GUI 진입점 및 메인 루프
-│   ├── ts_parser_core.py    # [Core] TS 패킷 파싱 및 데이터 처리
+│   ├── ts_analyzer_gui.py   # [Main] GUI 진입점 및 메인 루프 (Controller)
+│   ├── ts_parser_core.py    # [Core] TS 패킷 파싱 및 데이터 처리 (Model)
 │   ├── ts_scanner.py        # [Worker] 백그라운드 전체 스캔 및 통계
-│   ├── ts_ui_manager.py     # [UI] 버튼, 메뉴, 마우스 이벤트 관리
-│   ├── ts_models.py         # [Model] 데이터 구조체 정의 (참조용)
-│   ├── zitter_measurement.py # [New] PCR Jitter 분석 모듈 (Math & Graph)
-│   └── play_ts_opencv.py    # [Player] 단순 비디오 재생기 (Video Window)
+│   ├── ts_ui_manager.py     # [UI] 버튼, 메뉴, 마우스 이벤트 관리 (View Helper)
+│   ├── ts_models.py         # [Model] 데이터 구조체 정의 (Packet, PSI, PES)
+│   ├── zitter_measurement.py # [Analysis] PCR Jitter 분석 모듈
+│   ├── ts_etr290_analyzer.py # [Analysis] ETR-290 Priority 1/2 체크
+│   └── play_ts_opencv.py    # [Player] 단순 비디오 재생기
 └── doc/
     ├── mpeg2ts_parser.md    # 프로젝트 문서 (Main)
-    ├── pcr_info.md          # PCR 기술 문서
-    └── jitter_analysis.md   # Jitter 분석 상세 문서 (구 zitter_mesurment.md)
+    ├── ts_analyzer_gui.md   # GUI 매뉴얼
+    └── class_plan.md        # 클래스 구조도
 ```
 
 ### 🧩 모듈별 상세 분석
 
 #### 1. `ts_analyzer_gui.py` (Controller & View)
-- **역할**: 프로그램의 메인 진입점이며, OpenCV 창을 생성하고 메인 루프를 실행합니다.
-- **주요 기능**:
-  - **화면 레이아웃**: 5분할 대시보드 (PAT, PMT, Detail, PES, Hex) 렌더링.
-  - **이벤트 처리**: 키보드/마우스 이벤트 처리, 필터 토글, 네비게이션 제어.
-  - **Smart Search Engine**: 단순 Seek가 아닌, 재생(Playback) 기반의 고속 필터링 검색 엔진 탑재.
-  - **File I/O**: Tkinter를 이용한 파일 열기 대화상자 지원 및 예외 처리 강화.
-  - **연동**: `TSParser`, `TSScanner`, `UIManager` 인스턴스를 생성하고 조율.
+- **역할**: 프로그램의 메인 진입점. OpenCV 창 생성, 메인 루프 실행, 사용자 입력 처리.
+- **개선사항 (2025-11-30)**:
+  - **`_initialize_file`**: 파일 로드 및 초기화 로직 통합.
+  - **Tkinter Interop**: 파일 다이얼로그와 OpenCV 메인 루프 간의 충돌 방지 처리.
+  - **Smart Filtering**: Tree 선택(Exclusive)과 Toolbar 필터(Inclusive)의 동작 구분.
 
 #### 2. `ts_parser_core.py` (Core Logic)
-- **역할**: TS 파일 입출력 및 바이트 단위 파싱을 담당하는 핵심 엔진입니다.
+- **역할**: TS 파일 입출력 및 바이트 단위 파싱.
 - **주요 기능**:
-  - **Packet Parsing**: 188바이트 패킷 헤더(PID, PUSI, CC 등) 파싱.
-  - **Deep Analysis**: ISO/IEC 13818-1 표준에 의거한 Adaptation Field, PCR, ES Info 파싱.
-  - **PES Parsing**: PES 헤더, PTS/DTS 타임스탬프, Stream ID 추출.
+  - **PAT/PMT Parsing**: `_parse_pat`, `_parse_pmt` 메서드를 통해 PSI 테이블 구조 분석.
+  - **Bug Fixes**: 
+    - PAT 파싱 루프 조건 수정 (마지막 프로그램 누락 방지).
+    - Program 0 (NIT) 정상 인식 처리.
+  - **ETR-290 Support**: CRC32 계산 및 Table ID 검증 기능 내장.
 
 #### 3. `ts_scanner.py` (Background Service)
-- **역할**: GUI 동작에 영향을 주지 않고 별도 스레드에서 파일 전체를 정밀 스캔합니다.
-- **주요 기능**:
-  - **Full Scan**: 파일의 처음부터 끝까지 읽으며 PID별 패킷 카운트 누적.
-  - **Reporting**: 분석이 완료되면 Markdown 형식의 리포트 파일 생성 (`output/` 폴더).
-
-#### 4. `ts_ui_manager.py` (UI Component)
-- **역할**: OpenCV 화면 위에 그려지는 UI 요소(버튼, 메뉴, 툴바)를 관리합니다.
-- **주요 기능**:
-  - **Interactive Toolbar**: Play/Pause 상태 표시, 필터 버튼(Video/Audio/PCR 등) 및 **Jitter** 버튼 관리.
-  - **Interaction**: 마우스 오버/클릭 이벤트 처리 및 시각적 피드백 제공.
-  - **Menu Drawing**: OpenCV Canvas 위에 파일 메뉴 및 드롭다운 메뉴 렌더링.
+- **역할**: GUI 동작에 영향을 주지 않고 별도 스레드에서 파일 전체를 정밀 스캔.
+- **기능**: 전체 패킷 카운팅, PID별 점유율 계산, 리포트 생성.
 
 ---
 
 ## 3. 주요 기능 (Key Features)
 
 ### 📊 1. Multi-View Dashboard
-OpenCV Canvas에 직접 드로잉하여 빠른 반응속도를 제공합니다.
-- **Left Panel (PSI View)**:
-  - **PAT View**: 탐지된 Program 목록 표시.
-  - **PMT View**: 선택된 Program의 PID 목록 및 Stream Type(Video/Audio/Data) 표시.
-- **Right Panel (Packet View)**:
-  - **Detail View**: 
-    - **ISO 13818-1 Full Spec**: 헤더 플래그, Adaptation Field(Discontinuity, Random Access 등), Private Data 표시.
-    - **PCR Display**: Raw Value(42bit)와 초 단위 시간(Seconds)을 한 줄에 통합 표시.
-  - **PES View**: 
-    - **Navigation**: 이전/다음 PES Start 패킷으로 이동하는 `<` `>` 버튼 제공 (항상 표시).
-    - **Info**: Sequence Number, 누적 길이, PTS/DTS(초 단위 환산 포함) 표시.
-    - **Layout**: Audio Sync 및 Sequence 정보를 컴팩트하게 배치하여 가독성 확보.
-  - **Hex View**: 패킷의 Raw Data를 Hex/ASCII 덤프로 표시 (재생 중 자동 숨김 최적화).
+- **PSI View**: PAT(Program 목록)와 PMT(Stream 구성)를 계층적으로 보여줍니다. Program 0(NIT)도 지원합니다.
+- **Detail/Hex View**: 헤더 플래그, Adaptation Field, 188바이트 Hex Dump를 제공하며, 클릭 시 상호 하이라이트됩니다.
 
 ### 🔍 2. Advanced Filtering & Search
-2025-11-30 업데이트로 강화된 검색 시스템입니다.
-- **Filter Toolbar**:
-  - **Toggle Buttons**: `Video`, `Audio`, `PCR`, `PTS`, `DTS` 필터 버튼 제공.
-  - **OR Logic**: 여러 필터 동시 선택 시 "OR" 조건으로 동작 (예: Video 또는 PCR 패킷 검색).
-  - **Visual Feedback**: 활성화된 필터는 Highlight 처리.
-- **Play-while-Filtering (Smart Search)**:
-  - **Playback Search**: 필터 활성화 후 탐색 시, 고속 재생(x50) 모드로 전환하여 파일을 스캔.
-  - **Auto-Stop**: 필터 조건에 맞는 패킷(예: Video 패킷)을 발견하면 즉시 재생을 멈추고 해당 패킷 표시.
-  - **Stream Type Awareness**: ISO 13818-1 Stream Type ID(0x1B, 0x0F 등)를 기반으로 정확한 Video/Audio 패킷 식별.
+- **Smart Search**: 필터(Video/Audio/PCR 등)를 켜고 탐색하면, 해당 조건에 맞는 패킷을 고속으로 찾아냅니다.
+- **Auto-Focus**: 파일을 열면 자동으로 첫 번째 유효한 방송 프로그램(Program != 0)을 찾아 PMT 정보를 보여줍니다.
 
-### 🚀 3. PES Navigation System
-- **Video/Audio Support**: Video(무제한 길이 처리) 및 Audio 스트림 모두에 대해 이전/다음 PES 패킷 탐색 지원.
-- **Stability**: 초기 PID 선택 시 버튼 반응성 개선 및 검색 중지 로직 최적화.
-- **Optimized IO**: 검색 중 파일 I/O 배칭 처리를 통해 UI 응답성 유지.
-
-### 🕵️ 4. Background Analysis (BScan)
-- **Non-blocking**: 대용량 파일도 GUI 멈춤 없이 분석 가능.
-- **Statistics**: 전체 파일의 PID별 점유율(%) 및 패킷 개수 집계.
-- **Report**: 분석 결과는 텍스트 리포트로 자동 저장되어 추후 분석에 활용 가능.
+### 🚀 3. PES Navigation
+- **Back-tracking**: PES 헤더(Start Code)를 찾기 위해 역방향 탐색을 지원하며, 대용량 파일에서도 응답성을 유지하도록 탐색 깊이를 최적화했습니다.
 
 ---
 
-## 4. 데이터 흐름 (Data Flow)
-
-1. **초기화**: `AnalyzerGUI` 시작 -> `TSParser`가 파일 로드 -> `quick_scan()`으로 초기 구조 파악.
-2. **사용자 탐색 (Manual)**:
-   - **Scroll/Button**: 이동 요청 -> `read_packet_at(index)` -> 화면 갱신.
-3. **필터 탐색 (Smart Search)**:
-   - **Filter On -> Next**: `_handle_playback` 루프 진입 -> 필터 조건 검사(`check_packet_filter`) -> 매칭 시 `playing=False`.
-4. **심층 분석 (BScan)**:
-   - **BScan Click**: `TSScanner` 스레드 시작 -> 전체 파일 순회 -> `pid_counts` 업데이트.
-
-## 5. 최신 업데이트 (Updates)
+## 4. 최신 업데이트 (Updates)
 - **2025-11-30**:
-  - **File Menu Fix**: OpenCV와 Tkinter 연동 문제 해결 (`root.attributes('-topmost', True)` 적용).
-  - **Jitter Analysis**: `zitter_measurement.py` 모듈 추가 및 `jitter_analysis.md` 문서 정리. 메인 툴바에 **Jitter** 버튼 추가.
-  - **UI/UX**: PES 네비게이션 버튼 배치 최적화 및 Audio Sync 표시 위치 수정.
-- **2025-12-01**:
-  - **ETR-290 Analysis**: ETR-290 Priority 1, 2 항목(Sync, PAT, PMT, CC, PCR, PTS 등)에 대한 정밀 에러 체크 및 통계 모듈(`ts_etr290_analyzer.py`) 구현.
-  - **Report Enhancement**: BScan 리포트에 Video/Audio PPS(초당 패킷수), 패킷 도착 간격(Interval), PES 평균 길이 통계 추가. 상세 측정 통계 표(Min/Max/Avg) 신설.
-  - **Jitter Analysis Integration**: `TSJitterAnalyzer`에 **Alignment Jitter** 계산 로직 추가 및 리포트 연동 (Timing Jitter와 동시 표시).
+  - **PAT Parsing Fix**: PAT 파싱 시 일부 프로그램이 누락되거나 Program 0가 무시되던 버그 수정.
+  - **Refactoring**: `AnalyzerGUI`의 초기화 로직을 `_initialize_file`로 통합하여 코드 중복 제거.
+  - **UX Improvement**: PAT/PMT 트리 선택과 툴바 필터 버튼 간의 동작 로직 정립 (Exclusive vs Inclusive).
+  - **Stability**: 파일 열기 시 팝업 잔상 문제 해결 및 예외 처리 강화.
 
-## 6. 향후 계획 (To-Do)
-- [ ] **Jitter Graph GUI**: Jitter 분석 그래프를 OpenCV 윈도우 상에 팝업 또는 오버레이로 표시하는 기능 구현.
-- [ ] **Section Parsing**: PAT/PMT 외에 SDT, EIT, NIT 등 추가 SI 테이블 파싱.
-- [ ] **Video Decode**: `play_ts_opencv.py`를 통합하여 I/P/B 프레임 타입 분석 및 썸네일 표시.
+- **2025-12-01**:
+  - **ETR-290**: Priority 1, 2 항목 정밀 에러 체크 및 통계 모듈 통합.

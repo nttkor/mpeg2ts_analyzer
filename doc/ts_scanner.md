@@ -43,20 +43,37 @@ GUI 화면 중앙에 반투명 오버레이로 스캔 완료 메시지와 요약
 - **경로**: `output/` 폴더 (자동 생성)
 - **파일명**: `BScan_Report_YYYYMMDD_HHMMSS.md`
 
-#### 리포트 포맷 예시
+#### 리포트 포맷 예시 (2025-12-01 Update)
 ```markdown
-# MPEG2-TS Scan Report
-- Date: 2023-10-27 14:30:00
-- File: D:\git\mpeg2TS\TS\mama_uhd2.ts
-- Total Packets: 123456
-- File Size: 23.45 MB
+# MPEG2-TS Analysis Report
+- Date: 2025-12-01 06:31:43
+- File: ...
 
-## PID Usage Statistics
-| PID | Description | Count | Percentage |
-|---|---|---|---|
-| 0x0200 | H.265 (HEVC) | 110000 | 89.10% |
-| 0x0102 | MPEG-1 Audio | 500 | 0.40% |
-| 0x0000 | PAT | 100 | 0.08% |
+## 1. PSI/SI Structure
+### Detected Tables
+- **PAT (Program Association Table)**: Found (1,205 packets)
+- **PMT**: Found ...
+
+### PAT & Program Hierarchy
+- **PAT (PID 0x0000)**
+  - **Program 1**
+    - PMT PID: 0x0101
+    - PCR PID: 0x0200
+    - PID 0x0200: 📺 H.265 (HEVC) (PCR)
+    - PID 0x0102: 🔊 MPEG-1 Audio
+
+## 2. PID Statistics & Errors
+| PID | Type | Count | Usage | Avg Intv | ...
+|:---:|:---|---:|---:|---:| ...
+| 0x0200 | H.265 | 5.4M | 91.3% | 0.02ms | ...
+
+## 3. PCR Analysis (Timing)
+... (Jitter & Interval Stats)
+
+## 4. PTS Analysis
+...
+
+## ETR-290 Analysis Report
 ...
 ```
 

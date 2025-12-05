@@ -9,51 +9,81 @@
 scripts/
 ├── ts_models.py          # [Implemented] TS 데이터 모델 클래스 (Packet, PSI, PES)
 ├── ts_parser_core.py     # [Core] 모델 클래스를 활용한 파싱 엔진
-├── ts_analyzer_gui.py    # [View] 모델 데이터를 시각화
+├── ts_analyzer_gui.py    # [View] 모델 데이터를 시각화 (Controller)
+├── ts_ui_manager.py      # [View Helper] UI 그리기 및 이벤트 위임
+├── ts_scanner.py         # [Worker] 백그라운드 스캔 스레드
+└── ts_etr290_analyzer.py # [Analysis] ETR-290 규격 검증
 ```
 
-## 3. 클래스 상세 (ts_models.py)
+## 3. 주요 클래스 구조
 
-### A. `TSPacket` (기본 패킷)
+### A. `AnalyzerGUI` (in `ts_analyzer_gui.py`)
+- **역할**: 애플리케이션의 메인 컨트롤러.
+- **주요 메서드**:
+    - `run()`: 메인 루프 실행. 초기 파일이 있으면 `_initialize_file()` 호출.
+    - `_initialize_file()`: **[Refactored]** 파일 로드 후 파서 초기화, 스캔, 필터 리셋, 자동 선택(Auto Select)을 수행하는 통합 메서드.
+    - `_open_file(path)`: 파일 다이얼로그 처리 후 `_initialize_file()` 호출.
+    - `_mouse_cb(...)`: 마우스 이벤트 처리 및 `UIManager`로 위임.
+    - `_draw_psi_view(...)`: **[New]** 좌측 상단에 PSI 테이블(PAT, CAT, NIT...) 및 Program 목록 표시.
+    - `_draw_pmt_view(...)`: 좌측 하단에 선택된 Program의 PMT(Elementary Stream) 상세 표시.
+
+### B. `TSParser` (in `ts_parser_core.py`)
+- **역할**: 파일 I/O 및 패킷 파싱 핵심 로직.
+- **주요 메서드**:
+    - `read_packet_at(idx)`: 특정 인덱스의 패킷 읽기.
+    - `_parse_pat(...)`: **[Fixed]** PAT 섹션 파싱 (Loop 조건 수정됨).
+    - `_parse_pmt(...)`: PMT 섹션 파싱 및 스트림 정보 추출.
+    - `parse_pes_header(...)`: PES 헤더 및 타임스탬프(PTS/DTS) 파싱.
+
+### C. `TSPacket` (in `ts_models.py`)
 - **역할**: 188바이트 TS 패킷의 헤더 파싱 및 Payload 추출.
-- **주요 속성**:
-    - `pid`: Packet Identifier (13-bit)
-    - `pusi`: Payload Unit Start Indicator (bool)
-    - `tei`: Transport Error Indicator (bool)
-    - `cc`: Continuity Counter (4-bit)
-    - `adapt`: Adaptation Field Control (2-bit)
-    - `payload`: 헤더와 Adaptation Field를 제외한 순수 데이터.
+- **속성**: `pid`, `pusi`, `tei`, `cc`, `adapt`, `payload`.
 
-### B. PSI (Program Specific Information)
-**`PSISection` (Base Class)**
-- 테이블 섹션(Section)의 공통 헤더(Table ID, Length)를 파싱합니다.
-
-**`PATSection` (inherits PSISection)**
-- **Program Association Table**.
-- `programs` 속성: `{ program_number: pmt_pid }` 딕셔너리로 프로그램 맵 제공.
-
-**`PMTSection` (inherits PSISection)**
-- **Program Map Table**.
-- `pcr_pid`: PCR(Program Clock Reference) PID.
-- `streams` 속성: `{ elementary_pid: { 'type': int, 'desc': str } }`.
-- 스트림 타입(Stream Type)에 따라 "MPEG-2 Video", "AAC Audio" 등의 설명을 자동 매핑.
-
-### C. `PESHeader` (Packetized Elementary Stream)
-- **역할**: PUSI=1인 패킷의 Payload 시작 부분에 위치한 PES 헤더를 분석.
-- **주요 속성**:
-    - `stream_id`: 스트림 종류 식별 (Audio, Video, Private).
-    - `length`: PES 패킷 길이. 0이면 길이 미지정(비디오 등).
-    - `pts`: Presentation Time Stamp (초 단위 `float`로 변환됨).
-    - `dts`: Decoding Time Stamp.
+### D. PSI Models (in `ts_models.py`)
+- **`PSISection`**: 테이블 섹션 공통 헤더.
+- **`PATSection`**: Program Number -> PMT PID 매핑.
+- **`PMTSection`**: Elementary Stream PID 및 Type 정보.
 
 ## 4. 데이터 흐름 (Data Flow)
-1. **Raw Data Read**: `TSParser`가 파일에서 188바이트를 읽습니다.
-2. **Model Creation**: `packet = TSPacket(raw_data)`를 생성하여 헤더 정보를 즉시 파악합니다.
-3. **Dispatch**:
-    - `packet.pid == 0`: `PATSection(packet.payload)` 생성.
-    - `packet.pid == PMT_PID`: `PMTSection(packet.payload)` 생성.
-    - `packet.pusi == True`: `PESHeader(packet.payload)` 생성하여 오디오/비디오 상세 정보 획득.
+1. **Init**: `AnalyzerGUI` 시작 -> `_initialize_file()` -> `TSParser` 생성 -> `quick_scan()` -> 첫 번째 Program 자동 선택.
+2. **Event**: 사용자 클릭 -> `UIManager` or `_mouse_cb` -> 상태 변경 (`selected_pid`, `active_filters`).
+3. **Render**: `run()` Loop -> `update_packet_view()` -> `TSParser.read_packet_at()` -> `_draw_*` 메서드가 화면 갱신.
 
-## 5. 향후 계획
-- **SIT / SDT / NIT**: 추가적인 SI 테이블용 클래스 구현 (`PSISection` 상속).
-- **Adaptation Field**: `TSPacket` 내에 PCR 등 Adaptation Field 상세 파싱 로직 추가.
+## 5. 완료된 작업 (Completed)
+- **Model Integration**: `TSPacket`, `PSISection` 등 모델 클래스 적용 완료.
+- **UI Refactoring**: `UIManager` 분리 및 `_initialize_file` 통합 완료.
+- **Bug Fixes**: PAT 파싱 루프 오류 수정, Program 0(NIT) 처리 추가.
+- **Performance**: Back-tracking 탐색 제한 최적화.
+- **PSI View**: GUI 좌측 상단을 PSI Information View로 업그레이드 (PSI Table List 표시).
+- **Report**: BScan 리포트 PSI 트리 구조 개선.
+
+## 6. 향후 계획: Unified PSI Tree View (Unified Window)
+현재 분리된 `PSI View` (좌측 상단)와 `PMT View` (좌측 하단)를 **하나의 통합된 트리 뷰(Tree View)** 창으로 합치는 작업을 계획 중입니다.
+
+### 목표
+- **Single Window**: 좌측 패널 전체(높이 900px)를 하나의 트리 뷰로 사용.
+- **Hierarchical Navigation**: 파일 탐색기처럼 폴더(노드)를 접고 펼 수 있는 구조.
+
+### 트리 구조 (Draft)
+```text
+Root (TS File Name)
+├── PSI Tables
+│   ├── PAT (PID 0x0000)
+│   │   ├── Program 0 (NIT) -> PMT PID 0x0010
+│   │   │   └── Network Info Stream...
+│   │   ├── Program 1 (Service A) -> PMT PID 0x0100
+│   │   │   ├── Video Stream (PID 0x0101) [HEVC]
+│   │   │   └── Audio Stream (PID 0x0102) [AAC]
+│   │   └── Program 2...
+│   ├── CAT (PID 0x0001)
+│   ├── NIT (PID 0x0010)
+│   └── SDT (PID 0x0011)
+└── Statistics (Optional)
+    └── ...
+```
+
+### 구현 과제
+1.  **Node Class**: 트리 노드 상태(Expanded/Collapsed, Level, Parent/Child) 관리 클래스 도입.
+2.  **Rendering**: `cv2`로 들여쓰기(Indentation) 및 `[+]`/`[-]` 아이콘 그리기.
+3.  **Click Handling**: 노드 클릭(Select)과 확장/축소(Toggle) 이벤트 구분 처리.
+4.  **Auto-Expand**: 초기 로딩 시 유효한 Program 노드 자동 확장.
